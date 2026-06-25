@@ -1,9 +1,13 @@
 package com.codegraph.parser;
 
+import com.codegraph.cli.CodeGraphCli;
 import com.codegraph.core.Node;
 import com.codegraph.core.types.Language;
 import com.codegraph.core.types.NodeKind;
 import com.codegraph.core.types.Visibility;
+
+import picocli.CommandLine;
+
 import org.junit.Before;
 import org.junit.Test;
 
@@ -622,4 +626,14 @@ public class JavaParserTest {
             .count();
         assertTrue("应该解析出至少2个字段", fieldCount >= 2);
     }
+
+    
+    @Test
+    public static void testIndex(String[] args) {
+      args=new String[]{"init","-f","-p","/Users/wugao-pc/Desktop/Project/stream"};
+    //   args=new String[]{"index","-p","/Users/wugao-pc/Desktop/Project/stream"};
+        int exitCode = new CommandLine(new CodeGraphCli()).execute(args);
+        System.exit(exitCode);
+    }
+
 }
