@@ -11,6 +11,9 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 基于 tree-sitter 的通用代码提取器。
@@ -109,6 +112,9 @@ public class TreeSitterExtractor {
         } catch (Exception e) {
             logger.error("[extract] Error during AST traversal for {}: {}", filePathStr, e.getMessage(), e);
         }
+
+        // 4.1 解析方法调用引用，生成 CALLS 边（启发式）
+        resolvePendingReferences(ctx);
 
         // 5. 清理
         ts.ts_tree_delete(tree);
@@ -232,6 +238,20 @@ public class TreeSitterExtractor {
             visitEnumConstant(node, ctx, extractor);
         }
 
+        // ---- Method invocation (method call) ----
+        if (!visited && extractor.methodInvocationTypes().contains(nodeType)) {
+            visited = true;
+            logger.trace("[visit] {}→ processMethodInvocation '{}'", depthPrefix(depth), nodeType);
+            processMethodInvocation(node, ctx, extractor, false);
+        }
+
+        // ---- Super method invocation ----
+        if (!visited && extractor.superMethodTypes().contains(nodeType)) {
+            visited = true;
+            logger.trace("[visit] {}→ processMethodInvocation (super) '{}'", depthPrefix(depth), nodeType);
+            processMethodInvocation(node, ctx, extractor, true);
+        }
+
         // ---- Recursion: visit children ----
         if (!visited) {
             for (int i = 0; i < namedChildCount; i++) {
@@ -292,6 +312,7 @@ public class TreeSitterExtractor {
 
         // 进入类作用域
         ctx.pushScope(className, classNode.getId());
+        ctx.enterClass(classNode.getId());
 
         // 处理 EXTENDS
         int edgesBefore = ctx.getEdges().size();
@@ -336,6 +357,7 @@ public class TreeSitterExtractor {
             depthPrefix(depth), className, bodyNodesAdded);
 
         // 离开类作用域
+        ctx.exitClass();
         ctx.popScope();
     }
 
@@ -435,7 +457,7 @@ public class TreeSitterExtractor {
 
         String docstring = TreeSitterHelpers.getPrecedingDocstring(node, source, ts);
 
-        ctx.createNode(
+        com.codegraph.core.Node methodNode = ctx.createNode(
             NodeKind.METHOD, methodName, node,
             visibility, isStatic, isAbstract,
             signature, returnType, docstring
@@ -444,6 +466,23 @@ public class TreeSitterExtractor {
         logger.debug("[method] {}创建 {} '{}' sig={} ret={} vis={} static={} abstract={}",
             depthPrefix(depth), isConstructor ? "constructor" : "method",
             methodName, signature, returnType, visibility, isStatic, isAbstract);
+
+        // 进入方法上下文（用于 CALLS 边收集）
+        ctx.enterMethod(methodNode.getId(), methodNode.getQualifiedName());
+
+        // 遍历方法体，收集调用引用
+        TSNode body = TreeSitterHelpers.getChildByField(node, extractor.bodyField(), ts);
+        if (!ts.ts_node_is_null(body)) {
+            int childCount = ts.ts_node_named_child_count(body);
+            logger.trace("[method] {}  body has {} named children", depthPrefix(depth), childCount);
+            for (int i = 0; i < childCount; i++) {
+                TSNode child = ts.ts_node_named_child(body, i);
+                visitNode(child, ctx, extractor);
+            }
+        }
+
+        // 退出方法上下文
+        ctx.exitMethod();
     }
 
     // =========================================================================
@@ -668,5 +707,379 @@ public class TreeSitterExtractor {
      */
     private String buildExternalNodeId(String filePath, String kind, String name) {
         return TreeSitterHelpers.generateNodeId(filePath, kind, name, 0);
+    }
+
+    // =========================================================================
+    // Method invocation / CALLS edge generation
+    // =========================================================================
+
+    /**
+     * 处理方法调用节点（method_invocation 或 super_method_invocation），
+     * 提取调用信息并记录到上下文中，待后续解析为 CALLS 边。
+     */
+    private void processMethodInvocation(TSNode node, ExtractorContext ctx,
+                                         LanguageExtractor extractor, boolean isSuper) {
+        String source = ctx.getSource();
+        TreeSitterNative ts = ctx.getTreeSitter();
+
+        // 提取被调用方法名
+        String calleeName = extractMethodNameFromInvocation(node, source, ts);
+
+        if (calleeName == null || calleeName.isEmpty()) {
+            logger.trace("[calls] processMethodInvocation: calleeName is empty, skipping");
+            return;
+        }
+
+        // 获取调用位置
+        TSPoint startPoint = ts.ts_node_start_point(node);
+        int line = startPoint.row + 1;
+        int column = startPoint.column + 1;
+
+        // 判断是否为链式调用（如 foo.bar() 中的 bar()）
+        // method_invocation 的 parent 如果也是 method_invocation 且是 receiver 字段，则为链式
+        boolean isChained = isChainedCall(node, ctx, extractor);
+
+        if (isSuper) {
+            // super_method_invocation：记录到 superCallReferences
+            ctx.addSuperCallReference(calleeName, line, column);
+            logger.trace("[calls] super call '{}' at {}:{}", calleeName, line, column);
+        } else {
+            // method_invocation：获取 receiver 类型
+            String receiverType = extractReceiverType(node, source, ts);
+            ctx.addCallReference(calleeName, receiverType, line, column, isChained);
+            logger.trace("[calls] method call '{}' receiver='{}' chained={} at {}:{}",
+                calleeName, receiverType, isChained, line, column);
+        }
+    }
+
+    /**
+     * 从 method_invocation 节点提取方法名。
+     * tree-sitter-java 结构: method_invocation → method: identifier
+     */
+    private String extractMethodNameFromInvocation(TSNode node, String source, TreeSitterNative ts) {
+        // method_invocation 有个名为 "method" 的字段，值是 identifier
+        TSNode methodField = TreeSitterHelpers.getChildByField(node, "method", ts);
+        if (!ts.ts_node_is_null(methodField)) {
+            String text = TreeSitterHelpers.getNodeText(methodField, source, ts);
+            if (text != null && !text.isEmpty()) {
+                return text;
+            }
+        }
+
+        // 备用方案：遍历 named children 找 identifier
+        int childCount = ts.ts_node_named_child_count(node);
+        for (int i = 0; i < childCount; i++) {
+            TSNode child = ts.ts_node_named_child(node, i);
+            String type = ts.ts_node_type(child);
+            if ("identifier".equals(type)) {
+                String text = TreeSitterHelpers.getNodeText(child, source, ts);
+                if (text != null && !text.isEmpty()) {
+                    return text;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 提取 method_invocation 的 receiver 类型。
+     * 如 foo.bar() 中，receiverType 为 "foo"；this.foo() 中为 "this"。
+     */
+    private String extractReceiverType(TSNode node, String source, TreeSitterNative ts) {
+        // method_invocation 有个名为 "object" 的字段，值为 receiver 表达式
+        TSNode objectField = TreeSitterHelpers.getChildByField(node, "object", ts);
+        if (!ts.ts_node_is_null(objectField)) {
+            String type = ts.ts_node_type(objectField);
+            if ("identifier".equals(type)) {
+                return TreeSitterHelpers.getNodeText(objectField, source, ts);
+            }
+            if ("this".equals(type)) {
+                return "this";
+            }
+            // 可能是链式调用如 a.b.c()，返回第一个标识符
+            return extractFirstIdentifier(objectField, source, ts);
+        }
+
+        // 兼容旧版 tree-sitter-java：尝试找 field_access
+        int childCount = ts.ts_node_named_child_count(node);
+        for (int i = 0; i < childCount; i++) {
+            TSNode child = ts.ts_node_named_child(node, i);
+            String type = ts.ts_node_type(child);
+            if ("field_access".equals(type)) {
+                // field_access 结构: field_access → object: identifier + field: identifier
+                TSNode obj = TreeSitterHelpers.getChildByField(child, "object", ts);
+                if (!ts.ts_node_is_null(obj)) {
+                    return TreeSitterHelpers.getNodeText(obj, source, ts);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 递归提取第一个 identifier 文本（用于链式调用）。
+     */
+    private String extractFirstIdentifier(TSNode node, String source, TreeSitterNative ts) {
+        String type = ts.ts_node_type(node);
+        if ("identifier".equals(type)) {
+            return TreeSitterHelpers.getNodeText(node, source, ts);
+        }
+        if ("field_access".equals(type)) {
+            TSNode obj = TreeSitterHelpers.getChildByField(node, "object", ts);
+            if (!ts.ts_node_is_null(obj)) {
+                return extractFirstIdentifier(obj, source, ts);
+            }
+        }
+        int childCount = ts.ts_node_named_child_count(node);
+        for (int i = 0; i < childCount; i++) {
+            TSNode child = ts.ts_node_named_child(node, i);
+            String result = extractFirstIdentifier(child, source, ts);
+            if (result != null) return result;
+        }
+        return null;
+    }
+
+    /**
+     * 判断是否为链式调用。
+     * 链式调用如 foo.bar()：method_invocation 的 parent 也是 method_invocation，
+     * 且当前节点是 parent 的 object/receiver。
+     */
+    private boolean isChainedCall(TSNode node, ExtractorContext ctx, LanguageExtractor extractor) {
+        TreeSitterNative ts = ctx.getTreeSitter();
+        TSNode parent = ts.ts_node_parent(node);
+        if (ts.ts_node_is_null(parent)) return false;
+
+        String parentType = ts.ts_node_type(parent);
+        // 检查是否是 method_invocation 且当前节点是其 receiver
+        if (extractor.methodInvocationTypes().contains(parentType)) {
+            TSNode objectField = TreeSitterHelpers.getChildByField(parent, "object", ts);
+            if (!ts.ts_node_is_null(objectField)) {
+                // 检查 objectField 是否与当前节点具有相同的字节范围
+                return hasSameByteRange(node, objectField, ts);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 检查两个节点是否具有相同的字节范围（start 和 end byte 相同表示同一节点）。
+     */
+    private boolean hasSameByteRange(TSNode nodeA, TSNode nodeB, TreeSitterNative ts) {
+        int startA = ts.ts_node_start_byte(nodeA);
+        int endA = ts.ts_node_end_byte(nodeA);
+        int startB = ts.ts_node_start_byte(nodeB);
+        int endB = ts.ts_node_end_byte(nodeB);
+        return startA == startB && endA == endB;
+    }
+
+    // =========================================================================
+    // Heuristic call reference resolution
+    // =========================================================================
+
+    /**
+     * 在 AST 遍历完成后，解析收集到的方法调用引用，生成 CALLS 边。
+     * 使用启发式匹配：
+     *   1. 在当前文件已提取的 METHOD 节点中精确匹配
+     *   2. 构建 qualified name 并尝试匹配
+     *   3. 对 this.X 和 super.X 进行特殊处理
+     */
+    public void resolvePendingReferences(ExtractorContext ctx) {
+        List<com.codegraph.core.Node> methods = ctx.getNodes().stream()
+            .filter(n -> n.getKind() == NodeKind.METHOD)
+            .collect(java.util.stream.Collectors.toList());
+
+        // 建立方法名到节点列表的索引（用于快速查找）
+        java.util.Map<String, List<com.codegraph.core.Node>> methodNameIndex = new java.util.HashMap<>();
+        for (com.codegraph.core.Node method : methods) {
+            methodNameIndex.computeIfAbsent(method.getName(), k -> new java.util.ArrayList<>()).add(method);
+        }
+
+        logger.debug("[calls] === 启发式 CALLS 边解析开始 ===");
+        logger.debug("[calls] 待解析调用引用: {} 个普通调用, {} 个 super 调用",
+            ctx.getCallReferences().size(), ctx.getSuperCallReferences().size());
+        logger.debug("[calls] 当前文件已知方法数量: {}", methods.size());
+
+        // 打印已知方法列表（DEBUG 级别）
+        if (logger.isDebugEnabled()) {
+            for (com.codegraph.core.Node method : methods) {
+                logger.debug("[calls]   方法: {} (qualifiedName={}, exported={})",
+                    method.getName(), method.getQualifiedName(), method.isExported());
+            }
+        }
+
+        int callsEdgesAdded = 0;
+
+        // 解析普通方法调用
+        for (ExtractorContext.CallReference ref : ctx.getCallReferences()) {
+            logger.debug("[calls] ---- 解析调用: {} → {} (receiver='{}', chained={}, at {}:{})",
+                ref.callerId, ref.calleeName, ref.receiverType, ref.isChained, ref.line, ref.column);
+
+            String calleeId = resolveCalleeId(ref, methods, methodNameIndex, ctx);
+            if (calleeId != null) {
+                ctx.addEdge(ref.callerId, calleeId, EdgeKind.CALLS, ref.line, ref.column, "heuristic");
+                callsEdgesAdded++;
+                logger.debug("[calls]   ✓ 解析成功: caller={} → callee={} [heuristic]",
+                    ref.callerId, calleeId);
+            } else {
+                logger.debug("[calls]   ✗ 无法解析: {} → {} at {}:{}",
+                    ref.callerId, ref.calleeName, ref.line, ref.column);
+            }
+        }
+
+        // 解析 super 方法调用
+        for (ExtractorContext.CallReference ref : ctx.getSuperCallReferences()) {
+            logger.debug("[calls] ---- 解析 super 调用: {} → {} (at {}:{})",
+                ref.callerId, ref.calleeName, ref.line, ref.column);
+
+            String parentClassId = resolveSuperClassId(ctx);
+            if (parentClassId != null) {
+                logger.debug("[calls]   父类 ID: {}", parentClassId);
+                // 构建父类中方法的全限定名
+                String parentMethodQName = parentClassId + "." + ref.calleeName;
+                logger.debug("[calls]   查找父类方法 qualifiedName: {}", parentMethodQName);
+                String calleeId = findMethodByQualifiedName(parentMethodQName, methods);
+                if (calleeId != null) {
+                    ctx.addEdge(ref.callerId, calleeId, EdgeKind.CALLS, ref.line, ref.column, "heuristic");
+                    callsEdgesAdded++;
+                    logger.debug("[calls]   ✓ SUPER 调用解析成功: {} → {} [heuristic]",
+                        ref.callerId, calleeId);
+                } else {
+                    logger.debug("[calls]   ✗ 父类中未找到方法: {}", parentMethodQName);
+                }
+            } else {
+                logger.debug("[calls]   ✗ 无法获取父类 ID（当前类可能没有 EXTENDS 边）");
+            }
+        }
+
+        logger.debug("[calls] === 启发式 CALLS 边解析完成: 生成 {} 条边 ===", callsEdgesAdded);
+    }
+
+    /**
+     * 解析被调用方法的 ID。
+     */
+    private String resolveCalleeId(ExtractorContext.CallReference ref,
+                                    List<com.codegraph.core.Node> methods,
+                                    java.util.Map<String, List<com.codegraph.core.Node>> methodNameIndex,
+                                    ExtractorContext ctx) {
+        String calleeName = ref.calleeName;
+
+        // 1. 处理 this.X 调用：在本类中查找
+        if ("this".equals(ref.receiverType)) {
+            logger.debug("[calls]   策略: this.X 调用，在本类中查找 '{}'", calleeName);
+            String currentClassQName = getCurrentClassQName(ctx);
+            logger.debug("[calls]   当前类 qualifiedName: {}", currentClassQName);
+            if (currentClassQName != null) {
+                String targetQName = currentClassQName + "." + calleeName;
+                logger.debug("[calls]   目标 qualifiedName: {}", targetQName);
+                for (com.codegraph.core.Node method : methods) {
+                    if (calleeName.equals(method.getName())) {
+                        logger.debug("[calls]   检查方法: {} (qualifiedName={})",
+                            method.getName(), method.getQualifiedName());
+                        // 在本类或父类中查找
+                        if (method.getQualifiedName().equals(targetQName) ||
+                            method.getQualifiedName().endsWith("." + calleeName)) {
+                            logger.debug("[calls]   ✓ 匹配成功: {}", method.getId());
+                            return method.getId();
+                        }
+                    }
+                }
+            }
+            logger.debug("[calls]   ✗ 本类中未找到匹配方法");
+        }
+
+        // 2. 处理无 receiver 或简单方法名：在当前文件方法中查找
+        else if (ref.receiverType == null || ref.receiverType.isEmpty() || ref.receiverType.equals(calleeName)) {
+            logger.debug("[calls]   策略: 无 receiver 或简单方法名，查找同名方法");
+            List<com.codegraph.core.Node> candidates = methodNameIndex.get(calleeName);
+            if (candidates != null && !candidates.isEmpty()) {
+                logger.debug("[calls]   找到 {} 个同名方法", candidates.size());
+                // 如果只有一个匹配，直接返回
+                if (candidates.size() == 1) {
+                    com.codegraph.core.Node m = candidates.get(0);
+                    logger.debug("[calls]   ✓ 唯一匹配: {} (qualifiedName={})", m.getId(), m.getQualifiedName());
+                    return m.getId();
+                }
+                // 多个匹配时，返回第一个（最简单的启发式）
+                com.codegraph.core.Node m = candidates.get(0);
+                logger.debug("[calls]   ✓ 多匹配，选第一个: {} (qualifiedName={})", m.getId(), m.getQualifiedName());
+                return m.getId();
+            }
+            logger.debug("[calls]   ✗ 未找到同名方法");
+        }
+
+        // 3. 处理 receiver.method() 形式
+        else if (ref.receiverType != null && !ref.receiverType.isEmpty() && !ref.receiverType.equals(calleeName)) {
+            logger.debug("[calls]   策略: receiver.method() 形式，receiver='{}'", ref.receiverType);
+            List<com.codegraph.core.Node> candidates = methodNameIndex.get(calleeName);
+            if (candidates != null) {
+                logger.debug("[calls]   找到 {} 个同名方法", candidates.size());
+                // 优先返回导出（public/protected）方法
+                for (com.codegraph.core.Node method : candidates) {
+                    if (method.isExported()) {
+                        logger.debug("[calls]   ✓ 导出方法匹配: {} (qualifiedName={}, exported={})",
+                            method.getId(), method.getQualifiedName(), method.isExported());
+                        return method.getId();
+                    }
+                }
+                // 否则返回第一个
+                if (!candidates.isEmpty()) {
+                    com.codegraph.core.Node m = candidates.get(0);
+                    logger.debug("[calls]   ✓ 无导出方法，选第一个: {} (qualifiedName={})",
+                        m.getId(), m.getQualifiedName());
+                    return m.getId();
+                }
+            }
+            logger.debug("[calls]   ✗ 未找到同名方法");
+        }
+
+        return null;
+    }
+
+    /**
+     * 获取当前类的 qualified name。
+     */
+    private String getCurrentClassQName(ExtractorContext ctx) {
+        // 从 packageName 和当前类名构建全限定名
+        StringBuilder sb = new StringBuilder();
+        String packageName = ctx.getPackageName();
+        if (packageName != null && !packageName.isEmpty()) {
+            sb.append(packageName);
+            sb.append(".");
+        }
+        String className = ctx.getCurrentClassName();
+        if (className != null) {
+            sb.append(className);
+        }
+        return sb.length() > 0 ? sb.toString() : null;
+    }
+
+    /**
+     * 解析父类 ID（通过 EXTENDS 边查找）。
+     */
+    private String resolveSuperClassId(ExtractorContext ctx) {
+        String currentClassId = ctx.getCurrentClassId();
+        if (currentClassId == null) return null;
+
+        // 在 edges 中查找 EXTENDS 边
+        for (com.codegraph.core.Edge edge : ctx.getEdges()) {
+            if (EdgeKind.EXTENDS.equals(edge.getKind()) && edge.getSource().equals(currentClassId)) {
+                return edge.getTarget();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 根据 qualified name 查找方法节点 ID。
+     */
+    private String findMethodByQualifiedName(String qName, List<com.codegraph.core.Node> methods) {
+        for (com.codegraph.core.Node method : methods) {
+            if (qName.equals(method.getQualifiedName())) {
+                return method.getId();
+            }
+        }
+        return null;
     }
 }

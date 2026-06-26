@@ -59,7 +59,7 @@ java -jar target/codegraph4j-1.0-SNAPSHOT.jar status -p /path/to/your/project
 CodeGraph Status
 ================
 Project: /path/to/your/project
-Database: /path/to/your/project/.codegraph/codegraph.sqlite
+Database: /path/to/your/project/.codegraph/codegraph4j.db
 Nodes: 100
 Edges: 50
 ```
@@ -155,7 +155,7 @@ codegraph4j/
 
 ## 数据库
 
-CodeGraph 使用 SQLite 作为本地存储，数据库文件位于项目根目录的 `.codegraph/codegraph.sqlite`。
+CodeGraph 使用 SQLite 作为本地存储，数据库文件位于项目根目录的 `.codegraph/codegraph4j.db`。
 
 ### 主要表
 

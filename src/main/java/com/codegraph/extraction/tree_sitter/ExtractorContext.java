@@ -16,6 +16,7 @@ import java.util.*;
  *   - 作用域栈（用于构建完全限定名和 CONTAINS 边）
  *   - 节点和边的结果列表
  *   - 源文件信息
+ *   - 调用引用跟踪（用于启发式 CALLS 边生成）
  */
 public class ExtractorContext {
 
@@ -27,6 +28,18 @@ public class ExtractorContext {
     private final Deque<String> scopeStack;  // 类名栈，用于构建 qualifiedName
     private final Deque<String> parentIdStack; // 父节点 ID 栈，用于 CONTAINS 边
     private String packageName;
+
+    // ===== 调用引用跟踪（启发式 CALLS 边生成） =====
+    /** 当前方法上下文（ID） */
+    private String currentMethodId;
+    /** 当前方法 qualified name */
+    private String currentMethodQName;
+    /** 当前类 ID（用于 super_method_invocation 解析） */
+    private String currentClassId;
+    /** 待解析的方法调用引用 */
+    private final List<CallReference> callReferences = new ArrayList<>();
+    /** 待解析的父类方法调用引用（super.xxx） */
+    private final List<CallReference> superCallReferences = new ArrayList<>();
 
     public ExtractorContext(String filePath, String source, TreeSitterNative ts) {
         this.filePath = filePath;
@@ -199,12 +212,20 @@ public class ExtractorContext {
      * 添加关系边。
      */
     public void addEdge(String sourceId, String targetId, EdgeKind kind, int line, int column) {
+        addEdge(sourceId, targetId, kind, line, column, null);
+    }
+
+    /**
+     * 添加关系边（带 provenance）。
+     */
+    public void addEdge(String sourceId, String targetId, EdgeKind kind, int line, int column, String provenance) {
         Edge edge = new Edge();
         edge.setSource(sourceId);
         edge.setTarget(targetId);
         edge.setKind(kind);
         edge.setLine(line);
         edge.setColumn(column);
+        edge.setProvenance(provenance);
         edges.add(edge);
     }
 
@@ -248,5 +269,116 @@ public class ExtractorContext {
         sb.append(name);
 
         return sb.toString();
+    }
+
+    // =========================================================================
+    // Method context tracking (for call graph generation)
+    // =========================================================================
+
+    /**
+     * 进入方法作用域时调用，记录当前方法上下文。
+     */
+    public void enterMethod(String methodId, String methodQName) {
+        this.currentMethodId = methodId;
+        this.currentMethodQName = methodQName;
+    }
+
+    /**
+     * 离开方法作用域时调用。
+     */
+    public void exitMethod() {
+        this.currentMethodId = null;
+        this.currentMethodQName = null;
+    }
+
+    /**
+     * 进入类作用域时调用，记录当前类上下文。
+     */
+    public void enterClass(String classId) {
+        this.currentClassId = classId;
+    }
+
+    /**
+     * 离开类作用域时调用。
+     */
+    public void exitClass() {
+        this.currentClassId = null;
+    }
+
+    /**
+     * 获取当前方法 ID（调用者）。
+     */
+    public String getCurrentMethodId() {
+        return currentMethodId;
+    }
+
+    /**
+     * 获取当前类 ID。
+     */
+    public String getCurrentClassId() {
+        return currentClassId;
+    }
+
+    /**
+     * 获取当前类名（从作用域栈顶获取）。
+     */
+    public String getCurrentClassName() {
+        return scopeStack.isEmpty() ? null : scopeStack.peek();
+    }
+
+    /**
+     * 记录一个方法调用引用（待后置解析）。
+     *
+     * @param calleeName    被调用方法的简单名
+     * @param receiverType  调用者类型（如 "this" 或类名），可为 null
+     * @param line           调用所在行
+     * @param column         调用所在列
+     * @param isChained      是否为链式调用（如 foo.bar() 中的 bar()）
+     */
+    public void addCallReference(String calleeName, String receiverType, int line, int column, boolean isChained) {
+        if (currentMethodId == null || calleeName == null || calleeName.isEmpty()) return;
+        callReferences.add(new CallReference(currentMethodId, calleeName, receiverType, line, column, isChained));
+    }
+
+    /**
+     * 记录一个 super 方法调用引用。
+     */
+    public void addSuperCallReference(String calleeName, int line, int column) {
+        if (currentMethodId == null || currentClassId == null || calleeName == null) return;
+        superCallReferences.add(new CallReference(currentMethodId, calleeName, null, line, column, false));
+    }
+
+    public List<CallReference> getCallReferences() {
+        return callReferences;
+    }
+
+    public List<CallReference> getSuperCallReferences() {
+        return superCallReferences;
+    }
+
+    // =========================================================================
+    // Call reference record
+    // =========================================================================
+
+    /**
+     * 方法调用引用记录 — 在 AST 遍历时收集，遍历后统一解析为 CALLS 边。
+     */
+    public static class CallReference {
+        public final String callerId;
+        public final String calleeName;
+        public final String receiverType;
+        public final int line;
+        public final int column;
+        public final boolean isChained;
+
+        public CallReference(String callerId, String calleeName, String receiverType,
+                            int line, int column, boolean isChained) {
+            this.callerId = callerId;
+            this.calleeName = calleeName;
+            this.receiverType = receiverType;
+            this.line = line;
+            this.column = column;
+            this.isChained = isChained;
+        }
     }
 }

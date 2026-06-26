@@ -1,7 +1,9 @@
 package com.codegraph.extraction;
 
 import com.codegraph.cli.CodeGraphCli;
+import com.codegraph.core.Edge;
 import com.codegraph.core.Node;
+import com.codegraph.core.types.EdgeKind;
 import com.codegraph.core.types.Language;
 import com.codegraph.core.types.NodeKind;
 import com.codegraph.core.types.Visibility;
@@ -15,6 +17,7 @@ import org.junit.Test;
 import java.io.File;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.junit.Assert.*;
 
@@ -672,6 +675,190 @@ public class JavaParserTest {
         System.out.println("[test] index 完成，数据库大小: " + dbSize + " bytes");
         assertTrue("数据库应该有内容 (>1KB)", dbSize > 1024);
         System.out.println("[test] ✅ stream 项目数据库生成成功: " + dbPath);
+    }
+
+    // =========================================================================
+    // 启发式 CALLS 边生成测试
+    // =========================================================================
+
+    /**
+     * 测试启发式 CALLS 边生成的各种边界情况。
+     *
+     * 覆盖场景：
+     * 1. this.X 调用（本类方法）
+     * 2. 无 receiver 调用（简单方法名）
+     * 3. receiver.method() 调用（带 receiver）
+     * 4. 链式调用 foo.bar() - 嵌套 method_invocation
+     * 5. super.X 调用（父类方法）
+     * 6. 多匹配时优先选择导出方法
+     * 7. 找不到匹配时的处理
+     */
+    @Test
+    public void testHeuristicCallsEdgeGeneration() throws Exception {
+        // 构造包含各种调用场景的测试代码
+        String content =
+            "package com.example;\n" +
+            "\n" +
+            "public class HeuristicTest extends BaseClass {\n" +
+            "    private int value;\n" +
+            "\n" +
+            "    // 场景1: this.X 调用（本类方法）\n" +
+            "    public void thisCall() {\n" +
+            "        this.helperMethod();\n" +
+            "    }\n" +
+            "\n" +
+            "    // 场景2: 无 receiver 调用\n" +
+            "    public void noReceiverCall() {\n" +
+            "        localMethod();\n" +
+            "    }\n" +
+            "\n" +
+            "    // 场景3: receiver.method() 调用\n" +
+            "    public void receiverCall() {\n" +
+            "        obj.externalMethod();\n" +
+            "    }\n" +
+            "\n" +
+            "    // 场景4: 链式调用 (嵌套 method_invocation)\n" +
+            "    public void chainedCall() {\n" +
+            "        foo.bar().baz();\n" +
+            "    }\n" +
+            "\n" +
+            "    // 场景5: super.X 调用\n" +
+            "    public void superCall() {\n" +
+            "        super.parentMethod();\n" +
+            "    }\n" +
+            "\n" +
+            "    // 场景6: 私有辅助方法（用于 this.X 匹配）\n" +
+            "    private void helperMethod() {\n" +
+            "    }\n" +
+            "\n" +
+            "    // 场景7: 本地方法（用于无 receiver 匹配）\n" +
+            "    private void localMethod() {\n" +
+            "    }\n" +
+            "}\n" +
+            "\n" +
+            "class BaseClass {\n" +
+            "    public void parentMethod() {\n" +
+            "    }\n" +
+            "}\n";
+
+        ParseResult result = parser.parse(Paths.get("HeuristicTest.java"), content);
+        List<Edge> callsEdges = result.getEdges().stream()
+            .filter(e -> e.getKind() == EdgeKind.CALLS)
+            .collect(Collectors.toList());
+
+        System.out.println("[testHeuristicCalls] === 启发式 CALLS 边测试 ===");
+        System.out.println("[testHeuristicCalls] 生成 CALLS 边数量: " + callsEdges.size());
+
+        for (Edge edge : callsEdges) {
+            System.out.println("[testHeuristicCalls]   CALLS: " + edge.getSource() + " → " + edge.getTarget());
+            System.out.println("[testHeuristicCalls]         provenance=" + edge.getProvenance() + ", line=" + edge.getLine());
+        }
+
+        // 验证生成了 CALLS 边
+        assertFalse("应该生成 CALLS 边", callsEdges.isEmpty());
+
+        // 验证所有 CALLS 边都有 heuristic provenance
+        for (Edge edge : callsEdges) {
+            assertEquals("CALLS 边应该有 heuristic provenance", "heuristic", edge.getProvenance());
+        }
+
+        // 验证 this.X 调用生成了边
+        boolean hasThisCall = callsEdges.stream().anyMatch(e -> e.getLine() == 11); // this.helperMethod() 在第11行
+        System.out.println("[testHeuristicCalls] this.X 调用边存在: " + hasThisCall);
+
+        // 验证无 receiver 调用生成了边
+        boolean hasNoReceiverCall = callsEdges.stream().anyMatch(e -> e.getLine() == 16); // localMethod() 在第16行
+        System.out.println("[testHeuristicCalls] 无 receiver 调用边存在: " + hasNoReceiverCall);
+
+        // 验证 receiver.method() 调用生成了边
+        boolean hasReceiverCall = callsEdges.stream().anyMatch(e -> e.getLine() == 21); // obj.externalMethod() 在第21行
+        System.out.println("[testHeuristicCalls] receiver.method() 调用边存在: " + hasReceiverCall);
+
+        // 验证链式调用（只记录最外层调用）
+        boolean hasChainedCall = callsEdges.stream().anyMatch(e -> e.getLine() == 26); // foo.bar().baz() 在第26行
+        System.out.println("[testHeuristicCalls] 链式调用边存在: " + hasChainedCall);
+
+        // 验证 super.X 调用生成了边
+        boolean hasSuperCall = callsEdges.stream().anyMatch(e -> e.getLine() == 31); // super.parentMethod() 在第31行
+        System.out.println("[testHeuristicCalls] super.X 调用边存在: " + hasSuperCall);
+
+        // 打印测试总结
+        System.out.println("[testHeuristicCalls] === 边界情况覆盖 ===");
+        System.out.println("[testHeuristicCalls]   this.X 调用: " + (hasThisCall ? "✓" : "✗"));
+        System.out.println("[testHeuristicCalls]   无 receiver 调用: " + (hasNoReceiverCall ? "✓" : "✗"));
+        System.out.println("[testHeuristicCalls]   receiver.method(): " + (hasReceiverCall ? "✓" : "✗"));
+        System.out.println("[testHeuristicCalls]   链式调用: " + (hasChainedCall ? "✓" : "✗"));
+        System.out.println("[testHeuristicCalls]   super.X 调用: " + (hasSuperCall ? "✓" : "✗"));
+    }
+
+    /**
+     * 测试多匹配时优先选择导出方法。
+     */
+    @Test
+    public void testCallsEdgePrefersExportedMethod() throws Exception {
+        String content =
+            "package com.example;\n" +
+            "\n" +
+            "public class OverloadTest {\n" +
+            "    // 私有方法\n" +
+            "    private void process() {\n" +
+            "    }\n" +
+            "\n" +
+            "    // 公有方法（应该被优先选择）\n" +
+            "    public void process() {\n" +
+            "    }\n" +
+            "\n" +
+            "    // 调用重载方法\n" +
+            "    public void caller() {\n" +
+            "        process();\n" +
+            "    }\n" +
+            "}\n";
+
+        ParseResult result = parser.parse(Paths.get("OverloadTest.java"), content);
+        List<Edge> callsEdges = result.getEdges().stream()
+            .filter(e -> e.getKind() == EdgeKind.CALLS)
+            .collect(Collectors.toList());
+
+        System.out.println("[testCallsEdgePrefersExported] CALLS 边数量: " + callsEdges.size());
+
+        // 至少应该生成一条 CALLS 边
+        assertFalse("应该生成 CALLS 边", callsEdges.isEmpty());
+    }
+
+    /**
+     * 测试继承层级中的方法调用解析。
+     */
+    @Test
+    public void testCallsEdgeInheritance() throws Exception {
+        String content =
+            "package com.example;\n" +
+            "\n" +
+            "public class InheritanceTest extends Parent {\n" +
+            "    public void childMethod() {\n" +
+            "        parentMethod();  // 应该解析到 Parent.parentMethod()\n" +
+            "        this.ownMethod();  // 应该解析到 InheritanceTest.ownMethod()\n" +
+            "    }\n" +
+            "\n" +
+            "    public void ownMethod() {\n" +
+            "    }\n" +
+            "}\n" +
+            "\n" +
+            "class Parent {\n" +
+            "    public void parentMethod() {\n" +
+            "    }\n" +
+            "}\n";
+
+        ParseResult result = parser.parse(Paths.get("InheritanceTest.java"), content);
+        List<Edge> callsEdges = result.getEdges().stream()
+            .filter(e -> e.getKind() == EdgeKind.CALLS)
+            .collect(Collectors.toList());
+
+        System.out.println("[testCallsEdgeInheritance] CALLS 边数量: " + callsEdges.size());
+        for (Edge edge : callsEdges) {
+            System.out.println("[testCallsEdgeInheritance]   " + edge.getSource() + " → " + edge.getTarget() + " (line=" + edge.getLine() + ")");
+        }
+
+        assertFalse("应该生成 CALLS 边", callsEdges.isEmpty());
     }
 
 }

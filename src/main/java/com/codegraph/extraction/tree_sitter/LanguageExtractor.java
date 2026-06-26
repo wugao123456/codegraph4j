@@ -45,6 +45,15 @@ public interface LanguageExtractor {
     /** 包声明节点类型 */
     default Set<String> packageTypes() { return Collections.emptySet(); }
 
+    /** 方法调用节点类型（如 method_invocation） */
+    default Set<String> methodInvocationTypes() { return Collections.emptySet(); }
+
+    /** 字段访问节点类型（如 field_access） */
+    default Set<String> fieldAccessTypes() { return Collections.emptySet(); }
+
+    /** super 方法调用节点类型 */
+    default Set<String> superMethodTypes() { return Collections.emptySet(); }
+
     // =========================================================================
     // Field names (tree-sitter child_by_field_name keys)
     // =========================================================================

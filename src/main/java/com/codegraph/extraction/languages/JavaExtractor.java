@@ -75,6 +75,21 @@ public class JavaExtractor implements LanguageExtractor {
     }
 
     @Override
+    public Set<String> methodInvocationTypes() {
+        return new HashSet<>(Collections.singletonList("method_invocation"));
+    }
+
+    @Override
+    public Set<String> superMethodTypes() {
+        return new HashSet<>(Collections.singletonList("super_method_invocation"));
+    }
+
+    @Override
+    public Set<String> fieldAccessTypes() {
+        return new HashSet<>(Collections.singletonList("field_access"));
+    }
+
+    @Override
     public String nameField() { return "name"; }
 
     @Override

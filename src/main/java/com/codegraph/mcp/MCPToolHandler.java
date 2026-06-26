@@ -1,20 +1,24 @@
 package com.codegraph.mcp;
 
+import com.codegraph.context.*;
+import com.codegraph.core.Edge;
 import com.codegraph.core.Node;
 import com.codegraph.core.types.EdgeKind;
+import com.codegraph.core.types.NodeKind;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.graph.GraphQueryManager;
 import com.codegraph.graph.GraphTraverser;
 import com.codegraph.graph.GraphTraverser.*;
 import com.codegraph.mcp.MCPTransport.*;
-import com.codegraph.resolution.ResolutionContext;
 import com.codegraph.resolution.frameworks.FrameworkRegistry;
-import com.codegraph.resolution.frameworks.FrameworkResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.sql.SQLException;
 import java.util.*;
 
@@ -268,7 +272,7 @@ public class MCPToolHandler {
         Node node = findSymbol(symbol, file);
         if (node == null) return text("Symbol not found: " + symbol);
 
-        Subgraph subgraph = traverser.getImpactRadius(node.getId(), depth);
+        com.codegraph.graph.GraphTraverser.Subgraph subgraph = traverser.getImpactRadius(node.getId(), depth);
 
         StringBuilder sb = new StringBuilder();
         sb.append("Impact radius of ").append(node.getName())
@@ -382,77 +386,737 @@ public class MCPToolHandler {
 
     private ToolCallResult handleExplore(Map<String, Object> args) throws SQLException {
         String query = requireArg(args, "query");
-        int maxFiles = intArg(args, "maxFiles", 12);
 
-        StringBuilder sb = new StringBuilder();
+        // Step 1: 自适应输出预算
+        int fileCount = countIndexedFiles();
+        ExploreOutputBudget budget = ExploreOutputBudget.getForFileCount(fileCount);
+        int maxFiles = clamp(intArg(args, "maxFiles", budget.defaultMaxFiles), 1, 20);
 
-        // 1. 尝试作为符号搜索
-        List<Node> searchResults = queries.searchNodes(query);
-        Set<String> seenFiles = new HashSet<>();
+        // Step 2: 混合搜索获取子图
+        ContextBuilder ctxBuilder = new ContextBuilder(queries);
+        ContextBuilder.FindOptions opts = new ContextBuilder.FindOptions();
+        opts.searchLimit = 8;
+        opts.traversalDepth = 3;
+        opts.maxNodes = 200;
 
-        if (!searchResults.isEmpty()) {
-            sb.append("=== Explore results for \"").append(query).append("\" ===\n\n");
-            sb.append("Found ").append(searchResults.size()).append(" symbol matches.\n\n");
-
-            // 按文件分组
-        Map<String, List<Node>> byFile = new LinkedHashMap<>();
-        final int[] fileCount = {0};
-        for (Node n : searchResults) {
-            if (fileCount[0] >= maxFiles) break;
-            String f = n.getFilePath();
-            if (!seenFiles.contains(f)) {
-                seenFiles.add(f);
-                fileCount[0]++;
-            }
-            byFile.computeIfAbsent(f, k -> new ArrayList<>()).add(n);
+        com.codegraph.context.Subgraph subgraph = ctxBuilder.findRelevantContext(query, opts);
+        if (subgraph.nodes.isEmpty()) {
+            return text("No relevant code found for \"" + query + "\"");
         }
 
-            for (Map.Entry<String, List<Node>> entry : byFile.entrySet()) {
-                String filePath = entry.getKey();
-                List<Node> nodes = entry.getValue();
+        // Step 3: 图感知粘合 — 注入 entry 节点的 callers/callees（同文件内）
+        Set<String> glueNodeIds = new LinkedHashSet<>();
+        Set<String> subgraphFiles = new LinkedHashSet<>();
+        for (Node n : subgraph.nodes.values()) {
+            if (n.getFilePath() != null) subgraphFiles.add(n.getFilePath());
+        }
+        final int GLUE_NODE_CAP = 60;
+        for (String rootId : subgraph.roots) {
+            if (glueNodeIds.size() >= GLUE_NODE_CAP) break;
+            List<CallerInfo> callers = traverser.getCallers(rootId, 1);
+            List<CalleeInfo> callees = traverser.getCallees(rootId, 1);
+            for (CallerInfo ci : callers) {
+                if (ci.node == null) continue;
+                if (glueNodeIds.size() >= GLUE_NODE_CAP) break;
+                if (subgraph.nodes.containsKey(ci.node.getId())) continue;
+                if (!subgraphFiles.contains(ci.node.getFilePath())) continue;
+                subgraph.addNode(ci.node);
+                glueNodeIds.add(ci.node.getId());
+            }
+            for (CalleeInfo ci : callees) {
+                if (ci.node == null) continue;
+                if (glueNodeIds.size() >= GLUE_NODE_CAP) break;
+                if (subgraph.nodes.containsKey(ci.node.getId())) continue;
+                if (!subgraphFiles.contains(ci.node.getFilePath())) continue;
+                subgraph.addNode(ci.node);
+                glueNodeIds.add(ci.node.getId());
+            }
+        }
 
-                // 获取文件级上下文
-                List<Node> allNodesInFile = queries.getNodesInFile(filePath);
+        // Step 4: 命名符号播种 — 从 query 提取 token，解析并注入子图
+        Set<String> namedSeedIds = new LinkedHashSet<>();
+        List<String> tokens = ctxBuilder.extractSymbols(query);
+        for (String token : tokens) {
+            if (namedSeedIds.size() >= 40) break;
+            try {
+                List<Node> byQName = queries.getNodesByQualifiedName(token);
+                if (byQName.isEmpty()) byQName = queries.getNodesByName(token);
+                if (byQName.isEmpty()) byQName = queries.searchNodes(token);
 
-                sb.append("--- ").append(filePath).append(" ---\n");
-                sb.append("  ").append(allNodesInFile.size()).append(" symbols total, ")
-                    .append(nodes.size()).append(" matches:\n");
-
-                // 展示匹配到的符号及其上下文
-                for (Node n : nodes) {
-                    sb.append(String.format("  [%s] %s", n.getKind().name(), n.getName()));
-                    if (n.getSignature() != null) {
-                        sb.append(" ").append(n.getSignature());
+                for (Node n : byQName) {
+                    if (namedSeedIds.size() >= 40) break;
+                    if (!subgraph.nodes.containsKey(n.getId())) {
+                        subgraph.addNode(n);
                     }
-                    sb.append(String.format(" (line %d)\n", n.getStartLine()));
+                    namedSeedIds.add(n.getId());
+                }
+            } catch (SQLException ignored) {}
+        }
 
-                    // 获取该节点的上下文
-                    GraphQueryManager.NodeContext ctx = graphManager.getContext(n.getId());
-                    if (!ctx.children.isEmpty()) {
-                        sb.append("    Children: ");
-                        for (Node child : ctx.children) {
-                            sb.append(child.getName()).append(", ");
-                        }
-                        sb.setLength(sb.length() - 2); // 去掉最后的逗号
-                        sb.append("\n");
+        // Step 5: 节点按文件分组 + 评分
+        Map<String, FileGroup> fileGroups = new LinkedHashMap<>();
+        Set<String> entryNodeIds = new LinkedHashSet<>();
+        for (String id : subgraph.roots) entryNodeIds.add(id);
+        entryNodeIds.addAll(namedSeedIds);
+
+        // 构建"直接连接到 entry"的节点集合
+        Set<String> connectedToEntry = new HashSet<>();
+        for (Edge e : subgraph.edges) {
+            if (entryNodeIds.contains(e.getSource())) connectedToEntry.add(e.getTarget());
+            if (entryNodeIds.contains(e.getTarget())) connectedToEntry.add(e.getSource());
+        }
+
+        for (Node n : subgraph.nodes.values()) {
+            if (n.getKind() == NodeKind.IMPORT || n.getKind() == NodeKind.EXPORT) continue;
+            if (isConfigLeafNode(n)) continue;
+
+            FileGroup group = fileGroups.computeIfAbsent(
+                n.getFilePath() != null ? n.getFilePath() : "", k -> new FileGroup());
+            group.nodes.add(n);
+
+            // 评分
+            if (namedSeedIds.contains(n.getId())) {
+                group.score += 50;
+            } else if (entryNodeIds.contains(n.getId())) {
+                group.score += 10;
+            } else if (connectedToEntry.contains(n.getId())) {
+                group.score += 3;
+            } else {
+                group.score += 1;
+            }
+        }
+
+        // 过滤低分文件（只保留 score >= 3，即有 entry 或直接连接 entry）
+        List<Map.Entry<String, FileGroup>> relevantFiles = new ArrayList<>();
+        for (Map.Entry<String, FileGroup> e : fileGroups.entrySet()) {
+            if (e.getValue().score >= 3) relevantFiles.add(e);
+        }
+
+        // 测试文件过滤
+        if (budget.excludeLowValueFiles && !mentionsTests(query)) {
+            List<Map.Entry<String, FileGroup>> nonLow = new ArrayList<>();
+            for (Map.Entry<String, FileGroup> e : relevantFiles) {
+                if (!isLowValue(e.getKey())) nonLow.add(e);
+            }
+            if (nonLow.size() >= 2) relevantFiles = nonLow;
+        }
+
+        // Step 6: RWR 图相关性
+        Map<String, Double> nodeRwr = new GraphRelevanceComputer().compute(
+            subgraph.nodes.keySet(), subgraph.edges, entryNodeIds);
+        Map<String, Double> fileGraphScore = new HashMap<>();
+        double maxGraph = 0;
+        for (Node n : subgraph.nodes.values()) {
+            double val = fileGraphScore.getOrDefault(n.getFilePath(), 0.0) + nodeRwr.getOrDefault(n.getId(), 0.0);
+            fileGraphScore.put(n.getFilePath(), val);
+            if (val > maxGraph) maxGraph = val;
+        }
+
+        // 查询词命中统计
+        Set<String> uniqueTerms = new HashSet<>();
+        for (String t : query.toLowerCase().split("\\s+")) {
+            if (t.length() >= 3) uniqueTerms.add(t);
+        }
+        Map<String, Integer> fileTermHits = new HashMap<>();
+        for (Map.Entry<String, FileGroup> e : relevantFiles) {
+            String fp = e.getKey();
+            String hay = fp.toLowerCase() + " " + joinNodeNames(e.getValue().nodes);
+            int hits = 0;
+            for (String t : uniqueTerms) if (hay.contains(t)) hits++;
+            fileTermHits.put(fp, hits);
+        }
+
+        // Central files：图分数 > 0 且文本命中 >= 1 的文件，取前 2 个
+        Set<String> centralFiles = new LinkedHashSet<>();
+        List<Map.Entry<String, Double>> scored = new ArrayList<>(fileGraphScore.entrySet());
+        scored.sort((a, b) -> Double.compare(b.getValue(), a.getValue()));
+        int centralCount = 0;
+        for (Map.Entry<String, Double> e : scored) {
+            if (centralCount >= 2) break;
+            if (e.getValue() > 0 && fileTermHits.getOrDefault(e.getKey(), 0) >= 1) {
+                centralFiles.add(e.getKey());
+                centralCount++;
+            }
+        }
+
+        // Entry files：定义了 entry 节点的文件
+        Set<String> entryFiles = new LinkedHashSet<>();
+        for (String id : entryNodeIds) {
+            Node n = subgraph.nodes.get(id);
+            if (n != null && n.getFilePath() != null) entryFiles.add(n.getFilePath());
+        }
+
+        // 相关性门控
+        if (maxGraph > 0) {
+            List<Map.Entry<String, FileGroup>> gated = new ArrayList<>();
+            for (Map.Entry<String, FileGroup> e : relevantFiles) {
+                String fp = e.getKey();
+                double gs = fileGraphScore.getOrDefault(fp, 0.0);
+                if (gs >= maxGraph * 0.06 || centralFiles.contains(fp) ||
+                    entryFiles.contains(fp) || fileTermHits.getOrDefault(fp, 0) >= 2) {
+                    gated.add(e);
+                }
+            }
+            if (gated.size() >= 2) relevantFiles = gated;
+        }
+
+        // Step 7: 文件排序
+        // Tier 1: agent 命名的文件
+        // Tier 2: corroborate（entry/central + >= 2 terms）
+        // Tier 3: 图相关性
+        // Tier 4: term 命中数
+        // Tier 5: 低价值文件降权
+        // Tier 6: 生成文件降权
+        final double maxGraphFinal = maxGraph;
+        relevantFiles.sort((a, b) -> {
+            String ap = a.getKey(), bp = b.getKey();
+            double ags = fileGraphScore.getOrDefault(ap, 0.0), bgs = fileGraphScore.getOrDefault(bp, 0.0);
+            int ah = fileTermHits.getOrDefault(ap, 0), bh = fileTermHits.getOrDefault(bp, 0);
+            boolean aa = namedSeedIds.stream().anyMatch(id -> {
+                Node n = subgraph.nodes.get(id);
+                return n != null && ap.equals(n.getFilePath());
+            });
+            boolean ba = namedSeedIds.stream().anyMatch(id -> {
+                Node n = subgraph.nodes.get(id);
+                return n != null && bp.equals(n.getFilePath());
+            });
+            if (aa != ba) return ba ? 1 : -1;
+            boolean ac = (entryFiles.contains(ap) || centralFiles.contains(ap)) && ah >= 2;
+            boolean bc = (entryFiles.contains(bp) || centralFiles.contains(bp)) && bh >= 2;
+            if (ac != bc) return bc ? 1 : -1;
+            if (Math.abs(ags - bgs) > maxGraphFinal * 0.01) return Double.compare(bgs, ags);
+            if (ah != bh) return bh - ah;
+            boolean al = isLowValue(ap), bl = isLowValue(bp);
+            if (al != bl) return al ? 1 : -1;
+            boolean ag = isGeneratedFile(ap), bg = isGeneratedFile(bp);
+            if (ag != bg) return ag ? 1 : -1;
+            if (a.getValue().score != b.getValue().score) return b.getValue().score - a.getValue().score;
+            return b.getValue().nodes.size() - a.getValue().nodes.size();
+        });
+
+        // Step 8: 构建输出段落
+        List<String> lines = new ArrayList<>();
+        lines.add("**Exploration: " + escape(query) + "**");
+        lines.add("");
+        lines.add("Found " + subgraph.nodes.size() + " symbols across " + fileGroups.size() + " files.");
+        lines.add("");
+
+        // 爆炸半径段落
+        String blastRadius = new BlastRadiusBuilder().build(subgraph, queries, traverser);
+        if (!blastRadius.isEmpty()) lines.add(blastRadius);
+
+        // 关系图段落
+        if (budget.includeRelationships) {
+            List<Edge> sigEdges = new ArrayList<>();
+            for (Edge e : subgraph.edges) {
+                if (e.getKind() != EdgeKind.CONTAINS) sigEdges.add(e);
+            }
+            if (!sigEdges.isEmpty()) {
+                lines.add("**Relationships**");
+                lines.add("");
+                Map<String, List<String[]>> byKind = new LinkedHashMap<>();
+                for (Edge e : sigEdges) {
+                    Node src = subgraph.nodes.get(e.getSource());
+                    Node tgt = subgraph.nodes.get(e.getTarget());
+                    if (src == null || tgt == null) continue;
+                    byKind.computeIfAbsent(e.getKind().name(), k -> new ArrayList<>())
+                          .add(new String[]{src.getName(), tgt.getName()});
+                }
+                for (Map.Entry<String, List<String[]>> ke : byKind.entrySet()) {
+                    int cap = budget.maxEdgesPerRelationshipKind;
+                    List<String[]> shown = ke.getValue().subList(0, Math.min(cap, ke.getValue().size()));
+                    lines.add("**" + ke.getKey() + ":**");
+                    for (String[] e : shown) lines.add("- " + e[0] + " \u2192 " + e[1]);
+                    if (ke.getValue().size() > cap) lines.add("- ... and " + (ke.getValue().size() - cap) + " more");
+                    lines.add("");
+                }
+            }
+        }
+
+        // 源码段落
+        lines.add("**Source Code**");
+        lines.add("");
+        lines.add("> The code below is the **verbatim, current on-disk source** of these files \u2014 re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns.");
+        lines.add("");
+
+        // Flow spine
+        ContextBuilder.FlowInfo flow = ctxBuilder.buildFlowFromNamedSymbols(query);
+        Set<String> pathNodeIds = flow.pathNodeIds;
+        Set<String> namedNodeIds = flow.namedNodeIds;
+        Set<String> uniqueNamedIds = flow.uniqueNamedNodeIds;
+
+        int totalChars = joinStrings(lines).length();
+        int filesIncluded = 0;
+        boolean anyTrimmed = false;
+
+        // 多态同构缓存
+        Map<String, Boolean> siblingSuperCache = new HashMap<>();
+        Map<String, Boolean> superManyCache = new HashMap<>();
+        final int MIN_SIBLINGS = 3;
+
+        for (Map.Entry<String, FileGroup> entry : relevantFiles) {
+            if (filesIncluded >= maxFiles) break;
+
+            String filePath = entry.getKey();
+            FileGroup group = entry.getValue();
+
+            // 检查文件是否必要（past 90% budget 停止非必要文件）
+            boolean fileNecessary = group.nodes.stream().anyMatch(n ->
+                entryNodeIds.contains(n.getId()) || pathNodeIds.contains(n.getId()) || namedNodeIds.contains(n.getId()));
+            if (!fileNecessary && totalChars > budget.maxOutputChars * 0.9) continue;
+
+            // 检查文件是否存在
+            Path absPath = Paths.get(filePath);
+            if (!absPath.isAbsolute()) absPath = Paths.get(projectPath, filePath);
+            if (!Files.exists(absPath)) continue;
+
+            List<String> fileLines;
+            try {
+                fileLines = Files.readAllLines(absPath);
+            } catch (IOException e) {
+                continue;
+            }
+
+            String lang = detectLanguage(filePath);
+
+            // ===== 渲染策略 =====
+            // 策略 A: 多态同构骨架化
+            boolean hasSpineNode = group.nodes.stream().anyMatch(n -> pathNodeIds.contains(n.getId()));
+            boolean isPolySib = !hasSpineNode && isPolymorphicSibling(group.nodes, queries, siblingSuperCache, MIN_SIBLINGS);
+            boolean spareNamed = group.nodes.stream().anyMatch(n -> uniqueNamedIds.contains(n.getId()));
+            boolean definesPolySuper = definesPolymorphicSupertype(group.nodes, queries, superManyCache, MIN_SIBLINGS);
+            boolean spared = spareNamed && !definesPolySuper;
+
+            // 检测神主文件（spine + 内容过大）
+            int namedBodyChars = 0;
+            for (Node n : group.nodes) {
+                if (isCallable(n.getKind().name()) && (pathNodeIds.contains(n.getId()) || namedNodeIds.contains(n.getId()))) {
+                    if (n.getStartLine() > 0 && n.getEndLine() > n.getStartLine()) {
+                        namedBodyChars += String.join("\n", fileLines.subList(
+                            Math.max(0, n.getStartLine() - 1), Math.min(fileLines.size(), n.getEndLine()))).length();
                     }
                 }
-                sb.append("\n");
             }
-        } else {
-            sb.append("No symbol matches found for \"").append(query).append("\".\n");
-            sb.append("Try searching for a specific class, method, or file name.\n");
+            boolean onSpineGodFile = hasSpineNode && namedBodyChars > budget.maxCharsPerFile
+                && group.nodes.stream().anyMatch(n -> isCallable(n.getKind().name()) && uniqueNamedIds.contains(n.getId()) && !pathNodeIds.contains(n.getId()));
+
+            if ((onSpineGodFile || (!hasSpineNode && isPolySib && !spared))) {
+                // 骨架化渲染
+                String skeleton = renderSkeleton(group.nodes, fileLines, pathNodeIds, namedNodeIds, uniqueNamedIds, budget, lang);
+                if (!skeleton.isEmpty()) {
+                    String tag = !pathNodeIds.isEmpty() && !namedNodeIds.isEmpty()
+                        ? "focused (the methods you named in full, the rest as signatures \u2014 codegraph_explore a signature for its body; do NOT Read)"
+                        : "skeleton (signatures only \u2014 codegraph_explore a name for its full body; do NOT Read)";
+                    lines.add(fileSectionHeader(filePath, tag));
+                    lines.add("");
+                    lines.add("```" + lang);
+                    lines.add(skeleton);
+                    lines.add("```");
+                    lines.add("");
+                    totalChars += skeleton.length() + 120;
+                    filesIncluded++;
+                    continue;
+                }
+            }
+
+            // 策略 B: 小文件整文件输出
+            boolean isCentral = centralFiles.contains(filePath);
+            int WHOLE_FILE_MAX_LINES = isCentral ? 280 : 220;
+            int WHOLE_FILE_MAX_CHARS = isCentral
+                ? Math.min(Math.max(0, budget.maxOutputChars - totalChars - 200), (int)(budget.maxCharsPerFile * 1.5))
+                : budget.maxCharsPerFile * 3;
+
+            if (fileLines.size() <= WHOLE_FILE_MAX_LINES && fileLines.size() * 80 <= WHOLE_FILE_MAX_CHARS) {
+                if (!fileNecessary && totalChars + fileLines.size() * 80 + 200 > budget.maxOutputChars) {
+                    anyTrimmed = true;
+                    continue;
+                }
+                String body = String.join("\n", fileLines);
+                String numbered = numberSourceLines(body, 1);
+                String names = extractSymbolNames(group.nodes, budget.maxSymbolsInFileHeader);
+                lines.add(fileSectionHeader(filePath, names));
+                lines.add("");
+                lines.add("```" + lang);
+                lines.add(numbered);
+                lines.add("```");
+                lines.add("");
+                totalChars += numbered.length() + 200;
+                filesIncluded++;
+                continue;
+            }
+
+            // 策略 C: 聚类分组
+            String clusters = renderClusters(group.nodes, fileLines, subgraph, entryNodeIds, glueNodeIds, connectedToEntry, pathNodeIds, namedNodeIds, budget, lang, filePath);
+            if (!clusters.isEmpty()) {
+                lines.add(clusters);
+                totalChars += clusters.length();
+                filesIncluded++;
+            }
         }
 
-        // 2. 附加状态信息
-        sb.append("--- Status ---\n");
-        long nodeCount = queries.getNodeCount();
-        long edgeCount = queries.getEdgeCount();
-        sb.append("Total indexed: ").append(nodeCount).append(" nodes, ")
-            .append(edgeCount).append(" edges in ")
-            .append(countIndexedFiles()).append(" files.\n");
+        // 完整性信号
+        if (budget.includeCompletenessSignal) {
+            if (anyTrimmed || filesIncluded < relevantFiles.size()) {
+                lines.add("*Some files were trimmed or omitted due to output budget limits.*");
+                lines.add("");
+            }
+        }
 
-        return text(sb.toString());
+        // 预算说明
+        if (budget.includeBudgetNote) {
+            lines.add("*Explore output budget: " + totalChars + "/" + budget.maxOutputChars + " chars, " + filesIncluded + "/" + maxFiles + " files.*");
+        }
+
+        return text(joinStrings(lines));
+    }
+
+    // ============ handleExplore 辅助方法 ============
+
+    private static int clamp(int val, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, val));
+    }
+
+    private static String escape(String s) {
+        return s != null ? s.replace("`", "\\`").replace("*", "\\*") : "";
+    }
+
+    private static String joinStrings(List<String> lines) {
+        StringBuilder sb = new StringBuilder();
+        for (String l : lines) sb.append(l).append("\n");
+        return sb.toString();
+    }
+
+    private static String joinNodeNames(Collection<Node> nodes) {
+        StringBuilder sb = new StringBuilder();
+        for (Node n : nodes) sb.append(n.getName().toLowerCase()).append(" ");
+        return sb.toString();
+    }
+
+    private static String detectLanguage(String filePath) {
+        if (filePath == null) return "";
+        if (filePath.endsWith(".java")) return "java";
+        if (filePath.endsWith(".kt") || filePath.endsWith(".kts")) return "kotlin";
+        if (filePath.endsWith(".ts") || filePath.endsWith(".tsx")) return "typescript";
+        if (filePath.endsWith(".js") || filePath.endsWith(".jsx") || filePath.endsWith(".mjs")) return "javascript";
+        if (filePath.endsWith(".py")) return "python";
+        if (filePath.endsWith(".go")) return "go";
+        if (filePath.endsWith(".rs")) return "rust";
+        if (filePath.endsWith(".rb")) return "ruby";
+        if (filePath.endsWith(".php")) return "php";
+        if (filePath.endsWith(".swift")) return "swift";
+        if (filePath.endsWith(".cs")) return "csharp";
+        if (filePath.endsWith(".cpp") || filePath.endsWith(".cc") || filePath.endsWith(".cxx") || filePath.endsWith(".c")) return "cpp";
+        if (filePath.endsWith(".h") || filePath.endsWith(".hpp")) return "cpp";
+        if (filePath.endsWith(".scala")) return "scala";
+        if (filePath.endsWith(".lua")) return "lua";
+        if (filePath.endsWith(".dart")) return "dart";
+        if (filePath.endsWith(".vue")) return "vue";
+        if (filePath.endsWith(".svelte")) return "svelte";
+        if (filePath.endsWith(".astro")) return "astro";
+        return "";
+    }
+
+    private static boolean isCallable(String kind) {
+        return "method".equalsIgnoreCase(kind) || "function".equalsIgnoreCase(kind)
+            || "component".equalsIgnoreCase(kind) || "constructor".equalsIgnoreCase(kind);
+    }
+
+    private static String fileSectionHeader(String filePath, String suffix) {
+        String fileName = filePath.contains("/") ? filePath.substring(filePath.lastIndexOf('/') + 1) : filePath;
+        return "**" + fileName + "** — " + suffix + " — `" + filePath + "`";
+    }
+
+    private static String numberSourceLines(String body, int startLine) {
+        String[] rawLines = body.split("\n", -1);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < rawLines.length; i++) {
+            sb.append(startLine + i).append("\t").append(rawLines[i]).append("\n");
+        }
+        return sb.toString();
+    }
+
+    private static String extractSymbolNames(Collection<Node> nodes, int max) {
+        Set<String> names = new LinkedHashSet<>();
+        for (Node n : nodes) {
+            if (n.getKind() != NodeKind.IMPORT && n.getKind() != NodeKind.EXPORT) {
+                names.add(n.getName());
+            }
+            if (names.size() >= max) break;
+        }
+        List<String> list = new ArrayList<>(names);
+        String joined = String.join(", ", list);
+        int omitted = names.size() - list.size();
+        if (omitted > 0) joined += ", +" + omitted + " more";
+        return joined;
+    }
+
+    private static boolean mentionsTests(String query) {
+        if (query == null) return false;
+        String lc = query.toLowerCase();
+        return lc.contains("test") || lc.contains("testing")
+            || lc.contains("spec") || lc.contains("verify");
+    }
+
+    private static boolean isConfigLeafNode(Node n) {
+        // Spring/MicroProfile 配置节点（@Value 绑定的常量）
+        if (n.getKind() == NodeKind.CONSTANT || n.getKind() == NodeKind.FIELD) {
+            String name = n.getName() != null ? n.getName().toLowerCase() : "";
+            String qname = n.getQualifiedName() != null ? n.getQualifiedName().toLowerCase() : "";
+            return name.startsWith("${") || qname.contains(".properties")
+                || qname.contains(".yml") || qname.contains(".yaml");
+        }
+        return false;
+    }
+
+    private static boolean isLowValue(String path) {
+        if (path == null) return false;
+        String lp = path.toLowerCase();
+        return lp.contains("/tests/") || lp.contains("/spec/") || lp.contains("/__tests__/")
+            || lp.contains("/test/") || lp.contains("/specs/")
+            || path.endsWith("_test.go") || path.endsWith("_test.py")
+            || path.endsWith("_spec.rb") || path.endsWith("_test.rb")
+            || path.endsWith(".test.ts") || path.endsWith(".spec.ts")
+            || path.endsWith(".test.tsx") || path.endsWith(".spec.tsx")
+            || path.endsWith(".test.js") || path.endsWith(".spec.js")
+            || path.endsWith(".test.java") || path.endsWith(".spec.java")
+            || path.endsWith("_test.java") || path.endsWith("_spec.java")
+            || path.endsWith("_tests.java") || path.endsWith("_test.kt")
+            || path.endsWith("_spec.kt") || lp.contains("/icons/") || lp.contains("/i18n/");
+    }
+
+    private static boolean isGeneratedFile(String path) {
+        if (path == null) return false;
+        String lp = path.toLowerCase();
+        return lp.contains(".pb.") || lp.endsWith(".pulsar.go")
+            || lp.endsWith("_mocks.go") || lp.endsWith("_mock.go")
+            || lp.contains("/generated/") || lp.contains("/generated_src/")
+            || lp.endsWith("_generated.java") || lp.endsWith("_generated.kt")
+            || lp.contains("generated_") && (lp.endsWith(".java") || lp.endsWith(".kt"));
+    }
+
+    private boolean isPolymorphicSibling(List<Node> nodes, QueryBuilder q, Map<String, Boolean> cache, int minSiblings) {
+        for (Node n : nodes) {
+            try {
+                List<Edge> outgoing = q.getOutgoingEdges(n.getId());
+                for (Edge e : outgoing) {
+                    if (e.getKind() != EdgeKind.EXTENDS && e.getKind() != EdgeKind.IMPLEMENTS) continue;
+                    String target = e.getTarget();
+                    Boolean cached = cache.get(target);
+                    if (cached != null) { if (cached) return true; continue; }
+                    try {
+                        List<Edge> incoming = q.getIncomingEdges(target);
+                        int count = 0;
+                        for (Edge ie : incoming) {
+                            if (ie.getKind() == EdgeKind.EXTENDS || ie.getKind() == EdgeKind.IMPLEMENTS) count++;
+                        }
+                        boolean many = count >= minSiblings;
+                        cache.put(target, many);
+                        if (many) return true;
+                    } catch (SQLException ignored) {}
+                }
+            } catch (SQLException ignored) {}
+        }
+        return false;
+    }
+
+    private boolean definesPolymorphicSupertype(List<Node> nodes, QueryBuilder q, Map<String, Boolean> cache, int minSiblings) {
+        for (Node n : nodes) {
+            String kn = n.getKind().name().toLowerCase();
+            if (!kn.equals("class") && !kn.equals("interface") && !kn.equals("struct")
+                && !kn.equals("trait") && !kn.equals("protocol") && !kn.equals("type_alias")
+                && !kn.equals("enum")) continue;
+            Boolean cached = cache.get(n.getId());
+            if (cached != null) return cached;
+            try {
+                List<Edge> incoming = q.getIncomingEdges(n.getId());
+                int count = 0;
+                for (Edge e : incoming) {
+                    if (e.getKind() == EdgeKind.EXTENDS || e.getKind() == EdgeKind.IMPLEMENTS) count++;
+                }
+                boolean many = count >= minSiblings;
+                cache.put(n.getId(), many);
+                if (many) return true;
+            } catch (SQLException ignored) {}
+        }
+        return false;
+    }
+
+    private String renderSkeleton(Collection<Node> nodes, List<String> fileLines,
+            Set<String> pathNodeIds, Set<String> namedNodeIds, Set<String> uniqueNamedIds,
+            ExploreOutputBudget budget, String lang) {
+
+        List<Node> syms = new ArrayList<>();
+        for (Node n : nodes) {
+            if ((n.getKind() == NodeKind.IMPORT || n.getKind() == NodeKind.EXPORT) && n.getStartLine() <= 0) continue;
+            syms.add(n);
+        }
+        syms.sort(Comparator.comparingInt(n -> n.getStartLine() > 0 ? n.getStartLine() : Integer.MAX_VALUE));
+
+        // 选择哪些符号显示 body
+        Set<String> bodyIds = new LinkedHashSet<>();
+        int bodyChars = 0;
+        int bodyCap = (int)(budget.maxCharsPerFile * 1.5);
+
+        final Set<String> CALLABLE_KINDS = new HashSet<>(Arrays.asList(
+            "method", "function", "component", "constructor", "property",
+            "METHOD", "FUNCTION", "COMPONENT", "CONSTRUCTOR", "PROPERTY"));
+
+        for (Node n : syms) {
+            String kn = n.getKind().name().toLowerCase();
+            int priority = !CALLABLE_KINDS.contains(kn) ? 99
+                : pathNodeIds.contains(n.getId()) ? 0
+                : uniqueNamedIds.contains(n.getId()) ? 1 : 99;
+            if (priority >= 99) continue;
+            if (n.getEndLine() < n.getStartLine()) continue;
+
+            int sz = 0;
+            try {
+                sz = String.join("\n", fileLines.subList(
+                    Math.max(0, n.getStartLine() - 1), Math.min(fileLines.size(), n.getEndLine()))).length();
+            } catch (Exception e) { continue; }
+            if (bodyChars + sz > bodyCap && !bodyIds.isEmpty()) continue;
+            bodyIds.add(n.getId());
+            bodyChars += sz;
+        }
+
+        // 渲染
+        List<String> skel = new ArrayList<>();
+        int coveredUntil = 0;
+        int sigCount = 0;
+        int sigDropped = 0;
+        int SIG_MAX = Math.max(12, budget.maxSymbolsInFileHeader * 2);
+
+        for (Node n : syms) {
+            if (n.getStartLine() > 0 && coveredUntil > 0 && n.getStartLine() <= coveredUntil) continue;
+
+            if (bodyIds.contains(n.getId())) {
+                int start = Math.max(0, n.getStartLine() - 1);
+                int end = Math.min(fileLines.size(), n.getEndLine());
+                String body = String.join("\n", fileLines.subList(start, end));
+                skel.add(numberSourceLines(body, n.getStartLine()));
+                coveredUntil = n.getEndLine();
+            } else {
+                int lineNo = n.getStartLine();
+                for (int k = 0; k < 4 && lineNo + k < fileLines.size(); k++) {
+                    String line = fileLines.get(lineNo - 1 + k);
+                    if (line != null && line.contains(n.getName())) { lineNo = lineNo + k; break; }
+                }
+                if (lineNo <= coveredUntil) continue;
+                if (sigCount >= SIG_MAX) { sigDropped++; continue; }
+                String sig = fileLines.get(Math.min(lineNo - 1, fileLines.size() - 1));
+                if (sig != null && !sig.trim().isEmpty()) {
+                    skel.add(lineNo + "\t" + sig.trim());
+                    sigCount++;
+                }
+            }
+        }
+        if (sigDropped > 0) skel.add("\u2026 +" + sigDropped + " more (signatures elided)");
+        return String.join("\n", skel);
+    }
+
+    private String renderClusters(Collection<Node> nodes, List<String> fileLines,
+            com.codegraph.context.Subgraph subgraph, Set<String> entryNodeIds, Set<String> glueNodeIds,
+            Set<String> connectedToEntry, Set<String> pathNodeIds, Set<String> namedNodeIds,
+            ExploreOutputBudget budget, String lang, String filePath) {
+
+        final Set<String> ENVELOPE_KINDS = new HashSet<>(Arrays.asList(
+            "file", "module", "class", "struct", "interface", "enum",
+            "namespace", "protocol", "trait", "component",
+            "FILE", "MODULE", "CLASS", "STRUCT", "INTERFACE", "ENUM",
+            "NAMESPACE", "PROTOCOL", "TRAIT", "COMPONENT"));
+
+        // 构建 range 列表
+        List<NodeRange> ranges = new ArrayList<>();
+        for (Node n : nodes) {
+            if (n.getStartLine() <= 0 || n.getEndLine() <= n.getStartLine()) continue;
+            if (ENVELOPE_KINDS.contains(n.getKind().name())
+                && (n.getEndLine() - n.getStartLine() + 1) > fileLines.size() * 0.5) continue;
+
+            int importance = 1;
+            if (entryNodeIds.contains(n.getId())) importance = 10;
+            else if (namedNodeIds.contains(n.getId())) importance = 9;
+            else if (glueNodeIds.contains(n.getId())) importance = 6;
+            else if (connectedToEntry.contains(n.getId())) importance = 3;
+
+            ranges.add(new NodeRange(n, importance, pathNodeIds.contains(n.getId())));
+        }
+
+        if (ranges.isEmpty()) return "";
+
+        // 按行排序
+        ranges.sort(Comparator.comparingInt(r -> r.startLine));
+
+        // 合并相邻/重叠范围
+        List<NodeRange> merged = new ArrayList<>();
+        for (NodeRange r : ranges) {
+            if (!merged.isEmpty() && r.startLine - merged.get(merged.size() - 1).endLine <= budget.gapThreshold) {
+                NodeRange last = merged.get(merged.size() - 1);
+                last.endLine = Math.max(last.endLine, r.endLine);
+                last.importance = Math.max(last.importance, r.importance);
+                if (r.isSpine) last.isSpine = true;
+            } else {
+                merged.add(r);
+            }
+        }
+
+        // 按重要性选择要展示的范围
+        List<NodeRange> selected = new ArrayList<>();
+        int bodyChars = 0;
+        int bodyCap = budget.maxCharsPerFile * 3;
+        for (NodeRange r : merged) {
+            if (r.importance >= 3) {
+                int sz = 0;
+                try {
+                    sz = String.join("\n", fileLines.subList(
+                        Math.max(0, r.startLine - 1), Math.min(fileLines.size(), r.endLine))).length();
+                } catch (Exception e) {}
+                if (bodyChars + sz > bodyCap && !selected.isEmpty()) continue;
+                selected.add(r);
+                bodyChars += sz;
+            }
+        }
+        if (selected.isEmpty()) return "";
+
+        // 渲染
+        List<String> lines = new ArrayList<>();
+        List<Node> allRangeNodes = new ArrayList<>();
+        for (NodeRange r : merged) allRangeNodes.add(r.node);
+        String names = extractSymbolNames(allRangeNodes, budget.maxSymbolsInFileHeader);
+        lines.add(fileSectionHeader(filePath, "clustered"));
+        lines.add("");
+
+        int shown = 0;
+        int maxClusters = budget.maxCharsPerFile / 40; // 每约 40 字符一个 cluster
+        for (NodeRange r : selected) {
+            if (shown++ >= maxClusters) break;
+            int start = Math.max(0, r.startLine - 1);
+            int end = Math.min(fileLines.size(), r.endLine);
+            String chunk = String.join("\n", fileLines.subList(start, end));
+            lines.add("```" + lang);
+            lines.add(numberSourceLines(chunk, r.startLine));
+            lines.add("```");
+            lines.add("");
+        }
+
+        return String.join("\n", lines);
+    }
+
+    // 内部类
+    private static class FileGroup {
+        List<Node> nodes = new ArrayList<>();
+        int score = 0;
+    }
+
+    private static class NodeRange {
+        Node node;
+        int startLine;
+        int endLine;
+        int importance;
+        boolean isSpine;
+        NodeRange(Node n, int importance, boolean isSpine) {
+            this.node = n; this.startLine = n.getStartLine(); this.endLine = n.getEndLine();
+            this.importance = importance; this.isSpine = isSpine;
+        }
     }
 
     // ============ Tool 7: codegraph_status ============
