@@ -10,6 +10,10 @@ import com.codegraph.db.SchemaManager;
 import com.codegraph.extraction.CodeParser;
 import com.codegraph.extraction.ParseResult;
 import com.codegraph.extraction.ParserFactory;
+import com.codegraph.resolution.ResolutionContext;
+import com.codegraph.resolution.frameworks.FrameworkExtractionResult;
+import com.codegraph.resolution.frameworks.FrameworkRegistry;
+import com.codegraph.resolution.frameworks.FrameworkResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -208,6 +212,107 @@ public class IndexCommand implements Runnable {
                 }
             }
             
+            // ========== 第二阶段：框架提取 ==========
+            logger.info("[Step 4] 开始框架检测与提取");
+            ResolutionContext ctx = new ResolutionContext(queryBuilder, projectPath.toString());
+            FrameworkRegistry registry = new FrameworkRegistry();
+            registry.registerDefaults();
+
+            // 检测项目使用的框架
+            List<FrameworkResolver> detectedFrameworks = registry.detectFrameworks(ctx);
+            logger.info("检测到 {} 个框架: {}", detectedFrameworks.size(),
+                detectedFrameworks.stream().map(FrameworkResolver::getName).collect(Collectors.toList()));
+            System.out.println("Detected frameworks: " +
+                detectedFrameworks.stream().map(FrameworkResolver::getName).collect(Collectors.toList()));
+
+            // 对每个检测到的框架，遍历所有已索引文件进行提取
+            int frameworkNodes = 0;
+            int frameworkEdges = 0;
+            for (FrameworkResolver fw : detectedFrameworks) {
+                logger.info("  [框架: {}] 开始提取...", fw.getName());
+                int fwNodeCount = 0;
+                int fwEdgeCount = 0;
+
+                for (int i = 0; i < codeFiles.size(); i++) {
+                    Path filePath = codeFiles.get(i);
+                    CodeParser parser = parserFactory.getParser(filePath);
+                    if (parser == null) continue;
+
+                    // 检查框架是否支持此文件的语言
+                    List<com.codegraph.core.types.Language> fwLangs = fw.getLanguages();
+                    if (fwLangs != null && !fwLangs.isEmpty() &&
+                        !fwLangs.contains(parser.getLanguage())) {
+                        continue;
+                    }
+
+                    try {
+                        String content = new String(Files.readAllBytes(filePath));
+                        FrameworkExtractionResult fwResult = fw.extract(
+                            filePath.toString(), content, ctx);
+
+                        if (fwResult.getNodes().isEmpty() && fwResult.getReferences().isEmpty()) {
+                            continue;
+                        }
+
+                        // 保存框架特有节点
+                        for (Node node : fwResult.getNodes()) {
+                            queryBuilder.insertNode(node);
+                            totalNodes++;
+                            fwNodeCount++;
+                        }
+
+                        // 保存框架引用（暂作为 references 边存储）
+                        for (com.codegraph.resolution.frameworks.UnresolvedRef ref : fwResult.getReferences()) {
+                            // 尝试解析引用
+                            String targetId = fw.resolve(
+                                ref.getReferenceName(), ref.getReferenceKind(),
+                                ref.getFilePath(), ctx);
+                            if (targetId != null) {
+                                Edge edge = new Edge();
+                                edge.setSource(ref.getFromNodeId());
+                                edge.setTarget(targetId);
+                                edge.setKind(com.codegraph.core.types.EdgeKind.REFERENCES);
+                                edge.setLine(ref.getLine());
+                                edge.setColumn(ref.getColumn());
+                                edge.setProvenance("framework:" + fw.getName());
+                                try {
+                                    queryBuilder.insertEdge(edge);
+                                    totalEdges++;
+                                    fwEdgeCount++;
+                                } catch (SQLException e) {
+                                    logger.debug("  跳过框架边: {}", e.getMessage());
+                                }
+                            }
+                        }
+
+                    } catch (IOException e) {
+                        logger.warn("  框架提取失败: {} — {}", filePath.getFileName(), e.getMessage());
+                    }
+                }
+
+                logger.info("  [框架: {}] 提取完成: {} 个节点, {} 条边", fw.getName(), fwNodeCount, fwEdgeCount);
+                frameworkNodes += fwNodeCount;
+                frameworkEdges += fwEdgeCount;
+            }
+
+            // 框架后处理
+            for (FrameworkResolver fw : detectedFrameworks) {
+                List<Node> postNodes = fw.postExtract(ctx);
+                for (Node node : postNodes) {
+                    try {
+                        queryBuilder.insertNode(node);
+                        totalNodes++;
+                        frameworkNodes++;
+                    } catch (SQLException e) {
+                        logger.warn("  后处理节点插入失败: {}", e.getMessage());
+                    }
+                }
+            }
+
+            db.commit();
+            logger.info("[Step 4] 框架提取完成: {} 个节点, {} 条边", frameworkNodes, frameworkEdges);
+            System.out.println("Framework nodes: " + frameworkNodes + ", edges: " + frameworkEdges);
+
             System.out.println();
             System.out.println("========== 索引完成 ==========");
             System.out.println("✓ Indexing completed");

@@ -16,8 +16,11 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class QueryBuilder {
     private static final Logger logger = LoggerFactory.getLogger(QueryBuilder.class);
@@ -253,6 +256,252 @@ public class QueryBuilder {
             
             stmt.executeUpdate();
         }
+    }
+
+    // ========== 批量查询方法（供 GraphTraverser / ReferenceResolver 使用） ==========
+
+    /**
+     * 批量按 ID 查询节点，返回 Map<id, Node>。
+     */
+    public Map<String, Node> getNodesByIds(Collection<String> ids) throws SQLException {
+        Map<String, Node> result = new HashMap<>();
+        if (ids == null || ids.isEmpty()) {
+            return result;
+        }
+
+        StringBuilder sql = new StringBuilder("SELECT * FROM nodes WHERE id IN (");
+        List<String> idList = new ArrayList<>(ids);
+        for (int i = 0; i < idList.size(); i++) {
+            if (i > 0) sql.append(", ");
+            sql.append("?");
+        }
+        sql.append(")");
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql.toString())) {
+            for (int i = 0; i < idList.size(); i++) {
+                stmt.setString(i + 1, idList.get(i));
+            }
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                Node node = mapResultSetToNode(rs);
+                result.put(node.getId(), node);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * 按名称查找节点（精确匹配）。
+     */
+    public List<Node> getNodesByName(String name) throws SQLException {
+        List<Node> nodes = new ArrayList<>();
+        String sql = "SELECT * FROM nodes WHERE name = ?";
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            stmt.setString(1, name);
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                nodes.add(mapResultSetToNode(rs));
+            }
+        }
+
+        return nodes;
+    }
+
+    /**
+     * 按全限定名查找节点（精确匹配）。
+     */
+    public List<Node> getNodesByQualifiedName(String qualifiedName) throws SQLException {
+        List<Node> nodes = new ArrayList<>();
+        String sql = "SELECT * FROM nodes WHERE qualified_name = ?";
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            stmt.setString(1, qualifiedName);
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                nodes.add(mapResultSetToNode(rs));
+            }
+        }
+
+        return nodes;
+    }
+
+    /**
+     * 按节点类型查找节点。
+     */
+    public List<Node> getNodesByKind(NodeKind kind) throws SQLException {
+        List<Node> nodes = new ArrayList<>();
+        String sql = "SELECT * FROM nodes WHERE kind = ?";
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            stmt.setString(1, kind.name());
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                nodes.add(mapResultSetToNode(rs));
+            }
+        }
+
+        return nodes;
+    }
+
+    /**
+     * 获取所有节点。
+     */
+    public List<Node> getAllNodes() throws SQLException {
+        List<Node> nodes = new ArrayList<>();
+        String sql = "SELECT * FROM nodes";
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                nodes.add(mapResultSetToNode(rs));
+            }
+        }
+
+        return nodes;
+    }
+
+    /**
+     * 获取所有边。
+     */
+    public List<Edge> getAllEdges() throws SQLException {
+        List<Edge> edges = new ArrayList<>();
+        String sql = "SELECT * FROM edges";
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                edges.add(mapResultSetToEdge(rs));
+            }
+        }
+
+        return edges;
+    }
+
+    /**
+     * 获取所有文件路径。
+     */
+    public List<String> getAllFiles() throws SQLException {
+        List<String> files = new ArrayList<>();
+        String sql = "SELECT path FROM files";
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                files.add(rs.getString("path"));
+            }
+        }
+
+        return files;
+    }
+
+    /**
+     * 获取节点的出边（可按 kind 过滤）。
+     */
+    public List<Edge> getOutgoingEdges(String nodeId, EdgeKind... kinds) throws SQLException {
+        List<Edge> edges = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("SELECT * FROM edges WHERE source = ?");
+        if (kinds != null && kinds.length > 0) {
+            sql.append(" AND kind IN (");
+            for (int i = 0; i < kinds.length; i++) {
+                if (i > 0) sql.append(", ");
+                sql.append("?");
+            }
+            sql.append(")");
+        }
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql.toString())) {
+            stmt.setString(1, nodeId);
+            if (kinds != null) {
+                for (int i = 0; i < kinds.length; i++) {
+                    stmt.setString(i + 2, kinds[i].name());
+                }
+            }
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                edges.add(mapResultSetToEdge(rs));
+            }
+        }
+
+        return edges;
+    }
+
+    /**
+     * 获取节点的入边（可按 kind 过滤）。
+     */
+    public List<Edge> getIncomingEdges(String nodeId, EdgeKind... kinds) throws SQLException {
+        List<Edge> edges = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("SELECT * FROM edges WHERE target = ?");
+        if (kinds != null && kinds.length > 0) {
+            sql.append(" AND kind IN (");
+            for (int i = 0; i < kinds.length; i++) {
+                if (i > 0) sql.append(", ");
+                sql.append("?");
+            }
+            sql.append(")");
+        }
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql.toString())) {
+            stmt.setString(1, nodeId);
+            if (kinds != null) {
+                for (int i = 0; i < kinds.length; i++) {
+                    stmt.setString(i + 2, kinds[i].name());
+                }
+            }
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                edges.add(mapResultSetToEdge(rs));
+            }
+        }
+
+        return edges;
+    }
+
+    /**
+     * 按名称查找节点（不区分大小写）。
+     */
+    public List<Node> getNodesByLowerName(String lowerName) throws SQLException {
+        List<Node> nodes = new ArrayList<>();
+        String sql = "SELECT * FROM nodes WHERE LOWER(name) = ?";
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            stmt.setString(1, lowerName.toLowerCase());
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                nodes.add(mapResultSetToNode(rs));
+            }
+        }
+
+        return nodes;
+    }
+
+    /**
+     * 获取某个文件的所有依赖文件路径（通过跨文件的 calls/references/extends/implements 边）。
+     */
+    public Set<String> getDependencyFilePaths(String filePath, EdgeKind... edgeKinds) throws SQLException {
+        Set<String> deps = new java.util.HashSet<>();
+        // 先找到该文件中的所有节点
+        List<Node> fileNodes = getNodesInFile(filePath);
+        if (fileNodes.isEmpty()) return deps;
+
+        Set<String> fileNodeIds = new java.util.HashSet<>();
+        for (Node n : fileNodes) fileNodeIds.add(n.getId());
+
+        // 查找这些节点的出边，找到外部依赖
+        for (Node n : fileNodes) {
+            List<Edge> outgoingEdges = getOutgoingEdges(n.getId(), edgeKinds);
+            for (Edge e : outgoingEdges) {
+                if (!fileNodeIds.contains(e.getTarget())) {
+                    Node targetNode = getNode(e.getTarget());
+                    if (targetNode != null) {
+                        deps.add(targetNode.getFilePath());
+                    }
+                }
+            }
+        }
+
+        return deps;
     }
 
     private Node mapResultSetToNode(ResultSet rs) throws SQLException {

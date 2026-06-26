@@ -12,7 +12,8 @@ import picocli.CommandLine.Command;
         InitCommand.class,
         IndexCommand.class,
         StatusCommand.class,
-        ServeCommand.class
+        ServeCommand.class,
+        TraverseCommand.class
     }
 )
 public class CodeGraphCli {
