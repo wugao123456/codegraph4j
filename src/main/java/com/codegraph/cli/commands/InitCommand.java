@@ -47,7 +47,7 @@ public class InitCommand implements Runnable {
             }
         }
         
-        File dbFile = new File(dbDir, "codegraph.sqlite");
+        File dbFile = new File(dbDir, "codegraph4j.db");
         if (dbFile.exists() && !force) {
             System.err.println("Database already exists: " + dbFile.getAbsolutePath());
             System.err.println("Use -f/--force to overwrite");

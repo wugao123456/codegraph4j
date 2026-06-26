@@ -14,7 +14,7 @@ public class ParserFactory {
     
     public ParserFactory() {
         this.parsers = new ArrayList<>();
-        this.parsers.add(new JavaParser());
+        this.parsers.add(new TreeSitterCodeParser());
         this.parsers.add(new JavaScriptParser());
     }
     

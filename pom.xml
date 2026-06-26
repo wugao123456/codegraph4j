@@ -82,6 +82,13 @@
             <version>${logback.version}</version>
         </dependency>
 
+        <!-- JNA: tree-sitter C 库桥接 -->
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna</artifactId>
+            <version>5.14.0</version>
+        </dependency>
+
         <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>

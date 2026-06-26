@@ -9,6 +9,7 @@ import com.codegraph.core.types.Visibility;
 import picocli.CommandLine;
 
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.nio.file.Paths;
@@ -17,16 +18,15 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 /**
- * JavaParser 单元测试
- * 覆盖核心解析逻辑的各种边界情况
+ * TreeSitter Java 解析器单元测试（从旧 JavaParser 迁移）
  */
 public class JavaParserTest {
     
-    private JavaParser parser;
+    private CodeParser parser;
     
     @Before
     public void setUp() {
-        parser = new JavaParser();
+        parser = new TreeSitterCodeParser();
     }
     
     @Test
@@ -80,7 +80,11 @@ public class JavaParserTest {
         List<Node> nodes = parser.parse(Paths.get("SimpleClass.java"), content);
         
         assertFalse("应该解析出类节点", nodes.isEmpty());
-        Node classNode = nodes.get(0);
+        Node classNode = nodes.stream()
+            .filter(n -> n.getKind() == NodeKind.CLASS)
+            .findFirst()
+            .orElse(null);
+        assertNotNull("应该找到 CLASS 节点", classNode);
         assertEquals("节点类型应该是 CLASS", NodeKind.CLASS, classNode.getKind());
         assertEquals("类名应该是 SimpleClass", "SimpleClass", classNode.getName());
         assertEquals("完全限定名应该是 com.example.SimpleClass", 
@@ -628,10 +632,10 @@ public class JavaParserTest {
     }
 
     
-    @Test
-    public static void testIndex(String[] args) {
+    // Manual test — run main() directly for dev testing
+    // @Test
+    public static void testIndexMain(String[] args) {
       args=new String[]{"init","-f","-p","/Users/wugao-pc/Desktop/Project/stream"};
-    //   args=new String[]{"index","-p","/Users/wugao-pc/Desktop/Project/stream"};
         int exitCode = new CommandLine(new CodeGraphCli()).execute(args);
         System.exit(exitCode);
     }

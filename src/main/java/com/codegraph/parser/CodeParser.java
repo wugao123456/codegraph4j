@@ -5,6 +5,7 @@ import com.codegraph.core.types.Language;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -24,6 +25,16 @@ public interface CodeParser {
      * @return 解析出的节点列表
      */
     List<Node> parse(Path filePath, String content) throws IOException;
+    
+    /**
+     * 解析文件并提取符号节点和关系边。
+     * 默认实现委托给 parse()，返回空的边列表。
+     * tree-sitter 解析器应覆盖此方法。
+     */
+    default ParseResult parseWithEdges(Path filePath, String content) throws IOException {
+        List<Node> nodes = parse(filePath, content);
+        return new ParseResult(nodes, Collections.emptyList());
+    }
     
     /**
      * 检查是否支持该文件

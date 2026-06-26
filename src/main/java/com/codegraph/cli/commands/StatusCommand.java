@@ -26,7 +26,7 @@ public class StatusCommand implements Runnable {
     public void run() {
         logger.info("Checking status for project: {}", projectRoot);
         
-        File dbFile = new File(projectRoot, ".codegraph/codegraph.sqlite");
+        File dbFile = new File(projectRoot, ".codegraph/codegraph4j.db");
         
         if (!dbFile.exists()) {
             System.out.println("CodeGraph not initialized for this project");

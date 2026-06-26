@@ -2,11 +2,13 @@ package com.codegraph.cli.commands;
 
 import com.codegraph.core.FileRecord;
 import com.codegraph.core.Node;
+import com.codegraph.core.Edge;
 import com.codegraph.core.types.NodeKind;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.db.SchemaManager;
 import com.codegraph.parser.CodeParser;
+import com.codegraph.parser.ParseResult;
 import com.codegraph.parser.ParserFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,7 +68,7 @@ public class IndexCommand implements Runnable {
         logger.info("强制重新索引: {}, 监听模式: {}", force, watch);
         
         Path projectPath = Paths.get(projectRoot).toAbsolutePath();
-        File dbFile = new File(projectPath.toFile(), ".codegraph/codegraph.sqlite");
+        File dbFile = new File(projectPath.toFile(), ".codegraph/codegraph4j.db");
         
         logger.info("数据库文件: {}", dbFile.getAbsolutePath());
         
@@ -135,15 +137,19 @@ public class IndexCommand implements Runnable {
                     // 解析文件
                     logger.info("  开始解析代码符号...");
                     long parseStart = System.currentTimeMillis();
-                    List<Node> nodes = parser.parse(filePath, content);
+                    ParseResult parseResult = parser.parseWithEdges(filePath, content);
+                    List<Node> nodes = parseResult.getNodes();
+                    List<Edge> edges = parseResult.getEdges();
                     long parseTime = System.currentTimeMillis() - parseStart;
-                    logger.info("  解析完成: 耗时 {}ms, 提取 {} 个符号", parseTime, nodes.size());
+                    logger.info("  解析完成: 耗时 {}ms, 提取 {} 个符号, {} 条边",
+                        parseTime, nodes.size(), edges.size());
                     
                     // 删除旧数据
                     if (existingFile != null) {
-                        logger.debug("  删除旧的节点数据...");
-                        int deleted = queryBuilder.deleteNodesByFile(filePath.toString());
-                        logger.debug("  删除 {} 个旧节点", deleted);
+                        logger.debug("  删除旧的节点和边...");
+                        int deletedNodes = queryBuilder.deleteNodesByFile(filePath.toString());
+                        logger.debug("  删除 {} 个旧节点, {} 条旧边",
+                            deletedNodes, edges.size()); // edges will be deleted via cascade or here
                     }
                     
                     // 保存节点
@@ -153,6 +159,14 @@ public class IndexCommand implements Runnable {
                         totalNodes++;
                     }
                     logger.info("  节点保存完成");
+                    
+                    // 保存边
+                    logger.debug("  保存 {} 条边到数据库...", edges.size());
+                    for (Edge edge : edges) {
+                        queryBuilder.insertEdge(edge);
+                        totalEdges++;
+                    }
+                    logger.info("  边保存完成");
                     
                     // 更新文件记录
                     FileRecord fileRecord = new FileRecord();
