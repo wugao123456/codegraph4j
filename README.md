@@ -1,6 +1,6 @@
 # codegraph4j
 
-CodeGraph 的 Java 版本 - 为 AI 编码助手提供语义代码知识图谱。
+CodeGraph 的 Java 版本 主要为java项目的各种框架、springboot、springcloud等 -  为 AI 编码助手提供语义代码知识图谱。
 
 ## 功能特性
 
