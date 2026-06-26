@@ -1,10 +1,11 @@
 # codegraph4j
 
-CodeGraph 的 Java 版本 主要为java项目的各种框架、springboot、springcloud等 -  为 AI 编码助手提供语义代码知识图谱。
+CodeGraph4j 的codegraph Java版本，java微服务工程化比较大、框架众多 - 为 AI 编码助手提供语义代码知识图谱。
 
 ## 功能特性
 
-- 支持 Java 和 JavaScript/TypeScript 代码解析
+- 支持 Java 和 JavaScript/JS 代码解析
+- 支持spring、springboot、springcloud等框架的代码解析
 - SQLite 本地存储，无需外部数据库
 - 命令行工具，易于集成到 CI/CD
 - Maven 项目结构，JDK 8 兼容
