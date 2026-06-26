@@ -12,6 +12,7 @@ import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
 
+import java.io.File;
 import java.nio.file.Paths;
 import java.util.List;
 
@@ -631,13 +632,46 @@ public class JavaParserTest {
         assertTrue("应该解析出至少2个字段", fieldCount >= 2);
     }
 
-    
-    // Manual test — run main() directly for dev testing
-    // @Test
-    public static void testIndexMain(String[] args) {
-      args=new String[]{"init","-f","-p","/Users/wugao-pc/Desktop/Project/stream"};
-        int exitCode = new CommandLine(new CodeGraphCli()).execute(args);
-        System.exit(exitCode);
+    /**
+     * 测试：对 stream 项目执行 init + index，生成 codegraph4j.db。
+     * 注意：此测试涉及 JNA native 调用 + SQLite，在 surefire fork JVM 中可能崩溃，
+     * 请通过 mvn exec:java 或直接在 IDE 中运行。
+     * 运行方式：mvn test -Dtest=JavaParserTest#testIndexStreamProject -DforkCount=0
+     */
+    @Ignore("Integration test — run with -DforkCount=0 or via IDE")
+    @Test
+    public void testIndexStreamProject() {
+        String projectPath = "/Users/wugao-pc/Desktop/Project/stream";
+        String dbPath = projectPath + "/.codegraph/codegraph4j.db";
+
+        // 确保项目目录存在
+        File projectDir = new File(projectPath);
+        assertTrue("项目目录不存在: " + projectPath, projectDir.exists() && projectDir.isDirectory());
+
+        // 1. 删除旧数据库
+        File dbFile = new File(dbPath);
+        if (dbFile.exists()) {
+            dbFile.delete();
+            System.out.println("[test] 已删除旧数据库: " + dbPath);
+        }
+
+        // 2. 执行 init -f
+        System.out.println("[test] 执行 codegraph init -f -p " + projectPath);
+        int initCode = new CommandLine(new CodeGraphCli()).execute("init", "-f", "-p", projectPath);
+        assertEquals("init 命令应返回 0", 0, initCode);
+        assertTrue("init 后数据库应存在: " + dbPath, dbFile.exists());
+        System.out.println("[test] init 完成，数据库大小: " + dbFile.length() + " bytes");
+
+        // 3. 执行 index
+        System.out.println("[test] 执行 codegraph index -p " + projectPath);
+        int indexCode = new CommandLine(new CodeGraphCli()).execute("index", "-p", projectPath);
+        assertEquals("index 命令应返回 0", 0, indexCode);
+
+        // 4. 验证数据库有内容
+        long dbSize = dbFile.length();
+        System.out.println("[test] index 完成，数据库大小: " + dbSize + " bytes");
+        assertTrue("数据库应该有内容 (>1KB)", dbSize > 1024);
+        System.out.println("[test] ✅ stream 项目数据库生成成功: " + dbPath);
     }
 
 }

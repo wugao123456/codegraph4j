@@ -306,7 +306,9 @@ public class JavaExtractor implements LanguageExtractor {
     }
 
     private List<TSNode> getModifierList(TSNode node, TreeSitterNative ts) {
-        TSNode modifiers = TreeSitterHelpers.getChildByField(node, modifiersField(), ts);
+        // tree-sitter-java 中 modifiers 是 named child，不是 field name，
+        // 使用 findNamedChildByType 而非 getChildByField 避免 C 库崩溃
+        TSNode modifiers = TreeSitterHelpers.findNamedChildByType(node, "modifiers", ts);
         if (ts.ts_node_is_null(modifiers)) return Collections.emptyList();
 
         List<TSNode> result = new ArrayList<>();
