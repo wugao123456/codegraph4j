@@ -1,11 +1,11 @@
-package com.codegraph.parser.tree_sitter;
+package com.codegraph.extraction.tree_sitter;
 
 import com.codegraph.core.Edge;
 import com.codegraph.core.Node;
 import com.codegraph.core.types.*;
-import com.codegraph.parser.bridge.TSNode;
-import com.codegraph.parser.bridge.TSPoint;
-import com.codegraph.parser.bridge.TreeSitterNative;
+import com.codegraph.extraction.bridge.TSNode;
+import com.codegraph.extraction.bridge.TSPoint;
+import com.codegraph.extraction.bridge.TreeSitterNative;
 
 import java.util.*;
 
@@ -24,7 +24,8 @@ public class ExtractorContext {
     private final TreeSitterNative ts;
     private final List<Node> nodes;
     private final List<Edge> edges;
-    private final Deque<String> scopeStack;
+    private final Deque<String> scopeStack;  // 类名栈，用于构建 qualifiedName
+    private final Deque<String> parentIdStack; // 父节点 ID 栈，用于 CONTAINS 边
     private String packageName;
 
     public ExtractorContext(String filePath, String source, TreeSitterNative ts) {
@@ -34,6 +35,7 @@ public class ExtractorContext {
         this.nodes = new ArrayList<>();
         this.edges = new ArrayList<>();
         this.scopeStack = new ArrayDeque<>();
+        this.parentIdStack = new ArrayDeque<>();
         this.packageName = "";
     }
 
@@ -66,10 +68,11 @@ public class ExtractorContext {
     // =========================================================================
 
     /**
-     * 进入作用域。应作为父节点压栈。
+     * 进入作用域。压入类名（用于 qualifiedName）和节点 ID（用于 CONTAINS 边）。
      */
-    public void pushScope(String nodeId) {
-        scopeStack.push(nodeId);
+    public void pushScope(String className, String nodeId) {
+        scopeStack.push(className);
+        parentIdStack.push(nodeId);
     }
 
     /**
@@ -79,13 +82,16 @@ public class ExtractorContext {
         if (!scopeStack.isEmpty()) {
             scopeStack.pop();
         }
+        if (!parentIdStack.isEmpty()) {
+            parentIdStack.pop();
+        }
     }
 
     /**
-     * 获取当前作用域的节点 ID（栈顶）。
+     * 获取当前作用域的节点 ID（栈顶），用于添加 CONTAINS 边。
      */
     public String getCurrentScopeId() {
-        return scopeStack.isEmpty() ? null : scopeStack.peek();
+        return parentIdStack.isEmpty() ? null : parentIdStack.peek();
     }
 
     /**

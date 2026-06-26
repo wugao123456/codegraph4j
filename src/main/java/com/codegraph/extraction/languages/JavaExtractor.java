@@ -1,10 +1,10 @@
-package com.codegraph.parser.languages;
+package com.codegraph.extraction.languages;
 
 import com.codegraph.core.types.Visibility;
-import com.codegraph.parser.bridge.TSNode;
-import com.codegraph.parser.bridge.TreeSitterLibrary;
-import com.codegraph.parser.bridge.TreeSitterNative;
-import com.codegraph.parser.tree_sitter.*;
+import com.codegraph.extraction.bridge.TSNode;
+import com.codegraph.extraction.bridge.TreeSitterLibrary;
+import com.codegraph.extraction.bridge.TreeSitterNative;
+import com.codegraph.extraction.tree_sitter.*;
 
 import java.util.*;
 

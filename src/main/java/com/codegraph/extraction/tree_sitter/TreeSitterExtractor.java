@@ -1,10 +1,10 @@
-package com.codegraph.parser.tree_sitter;
+package com.codegraph.extraction.tree_sitter;
 
 import com.codegraph.core.types.EdgeKind;
 import com.codegraph.core.types.NodeKind;
 import com.codegraph.core.types.Visibility;
-import com.codegraph.parser.ParseResult;
-import com.codegraph.parser.bridge.*;
+import com.codegraph.extraction.ParseResult;
+import com.codegraph.extraction.bridge.*;
 import com.sun.jna.Pointer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -291,7 +291,7 @@ public class TreeSitterExtractor {
         logger.trace("[class] {}  nodeId={}", depthPrefix(depth), classNode.getId());
 
         // 进入类作用域
-        ctx.pushScope(classNode.getId());
+        ctx.pushScope(className, classNode.getId());
 
         // 处理 EXTENDS
         int edgesBefore = ctx.getEdges().size();
@@ -372,7 +372,7 @@ public class TreeSitterExtractor {
         );
         logger.trace("[enum] {}  nodeId={}", depthPrefix(depth), enumNode.getId());
 
-        ctx.pushScope(enumNode.getId());
+        ctx.pushScope(enumName, enumNode.getId());
 
         // 处理接口实现
         int edgesBefore = ctx.getEdges().size();
@@ -533,17 +533,23 @@ public class TreeSitterExtractor {
         String source = ctx.getSource();
 
         TSNode superclass = TreeSitterHelpers.getChildByField(classNode, "superclass", ts);
+        logger.debug("[extends] checking '{}': superclass field isNull={}",
+            classEntity.getName(), ts.ts_node_is_null(superclass));
         if (!ts.ts_node_is_null(superclass)) {
+            String superType = ts.ts_node_type(superclass);
+            String superText = TreeSitterHelpers.getNodeText(superclass, source, ts);
+            logger.debug("[extends] superclass node type={} text='{}'", superType, superText);
             String superName = extractSimpleTypeName(superclass, source, ts);
+            logger.debug("[extends] extractSimpleTypeName → '{}'", superName);
             if (superName != null && !superName.isEmpty()) {
                 String superId = buildExternalNodeId(ctx.getFilePath(), "CLASS", superName);
                 ctx.addEdge(classEntity.getId(), superId, EdgeKind.EXTENDS,
                     ts.ts_node_start_point(superclass).row + 1,
                     ts.ts_node_start_point(superclass).column + 1);
-                logger.trace("[extends] {} extends {} → edge source={} target={}",
+                logger.debug("[extends] {} extends {} → edge source={} target={}",
                     classEntity.getName(), superName, classEntity.getId(), superId);
             } else {
-                logger.trace("[extends] {} has superclass node but empty name", classEntity.getName());
+                logger.debug("[extends] {} has superclass node but empty name", classEntity.getName());
             }
         }
     }
@@ -557,22 +563,46 @@ public class TreeSitterExtractor {
         TreeSitterNative ts = ctx.getTreeSitter();
         String source = ctx.getSource();
 
-        TSNode superifaces = TreeSitterHelpers.getChildByField(classNode, "superinterfaces", ts);
+        TSNode superifaces = TreeSitterHelpers.getChildByField(classNode, "interfaces", ts);
         if (!ts.ts_node_is_null(superifaces)) {
-            // superinterfaces → type_list → type_identifier ...
+            // interfaces → type_list → type_identifier ...
             int childCount = ts.ts_node_named_child_count(superifaces);
+            logger.debug("[implements] checking '{}': interfaces namedChildren={}",
+                classEntity.getName(), childCount);
             for (int i = 0; i < childCount; i++) {
                 TSNode child = ts.ts_node_named_child(superifaces, i);
-                String ifaceName = extractSimpleTypeName(child, source, ts);
-                if (ifaceName != null && !ifaceName.isEmpty()) {
-                    String ifaceId = buildExternalNodeId(ctx.getFilePath(), "INTERFACE", ifaceName);
-                    ctx.addEdge(classEntity.getId(), ifaceId, EdgeKind.IMPLEMENTS,
-                        ts.ts_node_start_point(child).row + 1,
-                        ts.ts_node_start_point(child).column + 1);
-                    logger.trace("[implements] {} implements {} → edge source={} target={}",
-                        classEntity.getName(), ifaceName, classEntity.getId(), ifaceId);
+                String childType = ts.ts_node_type(child);
+                String childText = TreeSitterHelpers.getNodeText(child, source, ts);
+                logger.debug("[implements]   child[{}] type={} text='{}'", i, childType, childText);
+
+                if ("type_list".equals(childType)) {
+                    // type_list contains type_identifier children (e.g., "Foo, Bar")
+                    int typeCount = ts.ts_node_named_child_count(child);
+                    for (int j = 0; j < typeCount; j++) {
+                        TSNode typeChild = ts.ts_node_named_child(child, j);
+                        String ifaceName = extractSimpleTypeName(typeChild, source, ts);
+                        logger.debug("[implements]   type_list[{}] → '{}'", j, ifaceName);
+                        addImplementsEdge(classEntity, ifaceName, child, ctx);
+                    }
+                } else {
+                    String ifaceName = extractSimpleTypeName(child, source, ts);
+                    logger.debug("[implements]   extractSimpleTypeName → '{}'", ifaceName);
+                    addImplementsEdge(classEntity, ifaceName, child, ctx);
                 }
             }
+        }
+    }
+
+    private void addImplementsEdge(com.codegraph.core.Node classEntity, String ifaceName,
+                                   TSNode node, ExtractorContext ctx) {
+        if (ifaceName != null && !ifaceName.isEmpty()) {
+            TreeSitterNative ts = ctx.getTreeSitter();
+            String ifaceId = buildExternalNodeId(ctx.getFilePath(), "INTERFACE", ifaceName);
+            ctx.addEdge(classEntity.getId(), ifaceId, EdgeKind.IMPLEMENTS,
+                ts.ts_node_start_point(node).row + 1,
+                ts.ts_node_start_point(node).column + 1);
+            logger.debug("[implements] {} implements {} → edge source={} target={}",
+                classEntity.getName(), ifaceName, classEntity.getId(), ifaceId);
         }
     }
 
@@ -591,6 +621,18 @@ public class TreeSitterExtractor {
             return TreeSitterHelpers.getNodeText(node, source, ts);
         }
 
+        // tree-sitter-java: superclass field 返回 node type = "superclass",
+        // 其内部 named child 才是 type_identifier
+        if ("superclass".equals(type)) {
+            int childCount = ts.ts_node_named_child_count(node);
+            for (int i = 0; i < childCount; i++) {
+                TSNode child = ts.ts_node_named_child(node, i);
+                String result = extractSimpleTypeName(child, source, ts);
+                if (result != null) return result;
+            }
+            return null;
+        }
+
         // generic_type → type_identifier
         if ("generic_type".equals(type)) {
             int childCount = ts.ts_node_named_child_count(node);
@@ -602,12 +644,22 @@ public class TreeSitterExtractor {
             }
         }
 
+        // type_list (e.g. implements Foo, Bar) → recursively extract each type_identifier
+        if ("type_list".equals(type)) {
+            int childCount = ts.ts_node_named_child_count(node);
+            for (int i = 0; i < childCount; i++) {
+                TSNode child = ts.ts_node_named_child(node, i);
+                String result = extractSimpleTypeName(child, source, ts);
+                if (result != null) return result;
+            }
+            return null;
+        }
+
         // scoped_identifier (e.g. java.util.List)
         if ("scoped_identifier".equals(type)) {
             return TreeSitterHelpers.getNodeText(node, source, ts);
         }
 
-        // type_list → delegate to children
         return null;
     }
 

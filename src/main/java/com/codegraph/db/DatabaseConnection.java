@@ -35,6 +35,11 @@ public class DatabaseConnection implements AutoCloseable {
         
         connection.setAutoCommit(false);
         
+        // 启用外键约束（ON DELETE CASCADE 需要此设置才生效）
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("PRAGMA foreign_keys = ON");
+        }
+        
         logger.info("Database opened: {}", databasePath);
     }
 

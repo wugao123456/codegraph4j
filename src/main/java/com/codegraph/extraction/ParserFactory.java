@@ -1,4 +1,4 @@
-package com.codegraph.parser;
+package com.codegraph.extraction;
 
 import java.nio.file.Path;
 import java.util.ArrayList;

@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.codegraph4j</groupId>
   <artifactId>codegraph4j</artifactId>
-  <name>CodeGraph4J</name>
+  <name>codegraph4j</name>
   <version>1.0-SNAPSHOT</version>
   <description>CodeGraph Java Edition - Semantic code knowledge graph for AI coding assistants</description>
   <url>https://github.com/codegraph/codegraph4j</url>

@@ -1,7 +1,7 @@
-package com.codegraph.parser.tree_sitter;
+package com.codegraph.extraction.tree_sitter;
 
-import com.codegraph.parser.bridge.TSNode;
-import com.codegraph.parser.bridge.TreeSitterNative;
+import com.codegraph.extraction.bridge.TSNode;
+import com.codegraph.extraction.bridge.TreeSitterNative;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;

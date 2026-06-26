@@ -1,4 +1,4 @@
-package com.codegraph.parser.tree_sitter;
+package com.codegraph.extraction.tree_sitter;
 
 /**
  * 导入信息 DTO。

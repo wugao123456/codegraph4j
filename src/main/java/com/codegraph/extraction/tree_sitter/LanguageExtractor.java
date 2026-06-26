@@ -1,7 +1,7 @@
-package com.codegraph.parser.tree_sitter;
+package com.codegraph.extraction.tree_sitter;
 
 import com.codegraph.core.types.Visibility;
-import com.codegraph.parser.bridge.TSNode;
+import com.codegraph.extraction.bridge.TSNode;
 
 import java.util.Collections;
 import java.util.Set;

@@ -1,4 +1,4 @@
-package com.codegraph.parser;
+package com.codegraph.extraction;
 
 import com.codegraph.core.Edge;
 import com.codegraph.core.Node;

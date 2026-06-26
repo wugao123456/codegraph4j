@@ -1,4 +1,4 @@
-package com.codegraph.parser.bridge;
+package com.codegraph.extraction.bridge;
 
 import com.sun.jna.Library;
 import com.sun.jna.Pointer;

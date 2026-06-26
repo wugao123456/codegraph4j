@@ -1,9 +1,9 @@
-package com.codegraph.parser;
+package com.codegraph.extraction;
 
 import com.codegraph.core.Node;
 import com.codegraph.core.types.Language;
-import com.codegraph.parser.languages.JavaExtractor;
-import com.codegraph.parser.tree_sitter.TreeSitterExtractor;
+import com.codegraph.extraction.languages.JavaExtractor;
+import com.codegraph.extraction.tree_sitter.TreeSitterExtractor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
