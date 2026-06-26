@@ -726,7 +726,7 @@ public class TreeSitterExtractor {
         String calleeName = extractMethodNameFromInvocation(node, source, ts);
 
         if (calleeName == null || calleeName.isEmpty()) {
-            logger.trace("[calls] processMethodInvocation: calleeName is empty, skipping");
+            logger.debug("[calls] processMethodInvocation: calleeName is empty, skipping");
             return;
         }
 
@@ -736,37 +736,35 @@ public class TreeSitterExtractor {
         int column = startPoint.column + 1;
 
         // 判断是否为链式调用（如 foo.bar() 中的 bar()）
-        // method_invocation 的 parent 如果也是 method_invocation 且是 receiver 字段，则为链式
         boolean isChained = isChainedCall(node, ctx, extractor);
 
         if (isSuper) {
-            // super_method_invocation：记录到 superCallReferences
             ctx.addSuperCallReference(calleeName, line, column);
-            logger.trace("[calls] super call '{}' at {}:{}", calleeName, line, column);
+            logger.debug("[calls] super call '{}' at {}:{}", calleeName, line, column);
         } else {
-            // method_invocation：获取 receiver 类型
             String receiverType = extractReceiverType(node, source, ts);
             ctx.addCallReference(calleeName, receiverType, line, column, isChained);
-            logger.trace("[calls] method call '{}' receiver='{}' chained={} at {}:{}",
+            logger.debug("[calls] method call '{}' receiver='{}' chained={} at {}:{}",
                 calleeName, receiverType, isChained, line, column);
         }
     }
 
     /**
      * 从 method_invocation 节点提取方法名。
-     * tree-sitter-java 结构: method_invocation → method: identifier
+     * tree-sitter-java 结构: method_invocation → name: identifier
      */
     private String extractMethodNameFromInvocation(TSNode node, String source, TreeSitterNative ts) {
-        // method_invocation 有个名为 "method" 的字段，值是 identifier
-        TSNode methodField = TreeSitterHelpers.getChildByField(node, "method", ts);
-        if (!ts.ts_node_is_null(methodField)) {
-            String text = TreeSitterHelpers.getNodeText(methodField, source, ts);
+        // tree-sitter-java 使用 "name" 字段而不是 "method" 字段
+        TSNode nameField = TreeSitterHelpers.getChildByField(node, "name", ts);
+        if (!ts.ts_node_is_null(nameField)) {
+            String text = TreeSitterHelpers.getNodeText(nameField, source, ts);
             if (text != null && !text.isEmpty()) {
-                return text;
+                return text.trim();
             }
         }
 
-        // 备用方案：遍历 named children 找 identifier
+        // 备用方案：遍历 named children 找第一个 identifier
+        // method_invocation 结构: object (可选), name: identifier, arguments (可选)
         int childCount = ts.ts_node_named_child_count(node);
         for (int i = 0; i < childCount; i++) {
             TSNode child = ts.ts_node_named_child(node, i);
@@ -774,7 +772,7 @@ public class TreeSitterExtractor {
             if ("identifier".equals(type)) {
                 String text = TreeSitterHelpers.getNodeText(child, source, ts);
                 if (text != null && !text.isEmpty()) {
-                    return text;
+                    return text.trim();
                 }
             }
         }

@@ -286,10 +286,17 @@ public class ContextBuilder {
 
     // ========== 内部类 ==========
 
+    /**
+     * 查找选项 — 配置上下文查找的搜索参数。
+     */
     public static class FindOptions {
+        /** 搜索结果数量上限 */
         public int searchLimit = 8;
+        /** 图遍历深度 */
         public int traversalDepth = 3;
+        /** 最大返回节点数 */
         public int maxNodes = 200;
+        /** 最小匹配分数阈值 */
         public double minScore = 0.2;
     }
 

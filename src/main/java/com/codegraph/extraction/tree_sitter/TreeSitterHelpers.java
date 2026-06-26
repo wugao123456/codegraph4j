@@ -55,13 +55,53 @@ public final class TreeSitterHelpers {
 
     /**
      * 获取节点在源文本中对应的字符串。
+     * 注意：tree-sitter 返回的是 UTF-8 字节偏移量，需要转换为字符偏移量。
      */
     public static String getNodeText(TSNode node, String source, TreeSitterNative ts) {
         if (ts.ts_node_is_null(node)) return "";
-        int start = ts.ts_node_start_byte(node);
-        int end = ts.ts_node_end_byte(node);
-        if (end <= start || start >= source.length()) return "";
-        return source.substring(start, Math.min(end, source.length()));
+        int byteStart = ts.ts_node_start_byte(node);
+        int byteEnd = ts.ts_node_end_byte(node);
+        if (byteEnd <= byteStart) return "";
+
+        // 将 UTF-8 字节偏移量转换为字符偏移量
+        int charStart = byteOffsetToCharOffset(source, byteStart);
+        int charEnd = byteOffsetToCharOffset(source, byteEnd);
+
+        if (charEnd <= charStart || charStart >= source.length()) return "";
+        return source.substring(charStart, Math.min(charEnd, source.length()));
+    }
+
+    /**
+     * 将 UTF-8 字节偏移量转换为字符串字符偏移量。
+     */
+    private static int byteOffsetToCharOffset(String source, int byteOffset) {
+        int byteCount = 0;
+        int charCount = 0;
+        for (int i = 0; i < source.length(); i++) {
+            if (byteCount >= byteOffset) {
+                return charCount;
+            }
+            // 计算当前字符的 UTF-8 字节长度
+            int codepoint = source.codePointAt(i);
+            byteCount += charCount(codepoint);
+            charCount++;
+        }
+        return charCount;
+    }
+
+    /**
+     * 计算码点对应的 UTF-8 字节数。
+     */
+    private static int charCount(int codepoint) {
+        if (codepoint <= 0x7F) {
+            return 1; // ASCII
+        } else if (codepoint <= 0x7FF) {
+            return 2; // 2字节字符
+        } else if (codepoint <= 0xFFFF) {
+            return 3; // 3字节字符（大多数中日韩文字）
+        } else {
+            return 4; // 4字节字符（emoji等）
+        }
     }
 
     // =========================================================================
