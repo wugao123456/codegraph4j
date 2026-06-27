@@ -2,10 +2,14 @@ package com.codegraph.mcp;
 
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
+import com.codegraph.mcp.MCPTransport.ToolCallResult;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * MCP 服务器入口点。
@@ -25,6 +29,7 @@ public class MCPServer {
     private final String projectPath;
     private DatabaseConnection db;
     private MCPSession session;
+    public MCPToolHandler toolHandler;
 
     public MCPServer(String projectPath) {
         this.projectPath = projectPath;
@@ -61,10 +66,11 @@ public class MCPServer {
                 db.open();
                 logger.info("Database opened: {}", dbFile.getAbsolutePath());
 
-                QueryBuilder queries = new QueryBuilder(db);
-                MCPToolHandler toolHandler = new MCPToolHandler(
-                    projectPath, db, queries);
-
+             //
+           //     Map<String, Object> params = new HashMap<>();
+           //     params.put("query", "stream");
+          //      ToolCallResult result = toolHandler.execute("codegraph_explore", params);
+          //      logger.info("Result: {}", result);
                 session = new MCPSession(projectPath, toolHandler);
                 session.start();
 
@@ -102,5 +108,11 @@ public class MCPServer {
             }
         }
         logger.info("MCP server stopped");
+    }
+
+    public static void main(String[] args) {
+        MCPServer server = new MCPServer("/Users/wugao-pc/Desktop/Project/stream");
+        server.start();
+
     }
 }

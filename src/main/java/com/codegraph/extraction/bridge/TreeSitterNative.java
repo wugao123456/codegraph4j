@@ -11,7 +11,7 @@ import com.sun.jna.Pointer;
  *   TSTree *    → Pointer
  *   TSLanguage * → Pointer
  *   TSNode      → TSNode (Structure.ByValue)
- *   bool        → boolean (JNA 自动转换 C int→boolean)
+ *   bool        → int (C bool = 4 bytes, JNA boolean = 1 byte, 可能造成参数编组错误)
  *   uint32_t    → int (Java int = 32-bit signed, 与 uint32_t 位宽相同)
  */
 public interface TreeSitterNative extends Library {
@@ -19,7 +19,7 @@ public interface TreeSitterNative extends Library {
     // ---- Parser lifecycle ----
     Pointer ts_parser_new();
     void ts_parser_delete(Pointer parser);
-    boolean ts_parser_set_language(Pointer parser, Pointer language);
+    int ts_parser_set_language(Pointer parser, Pointer language);
 
     // ---- Parsing ----
     Pointer ts_parser_parse_string(Pointer parser, Pointer oldTree, String source, int sourceLength);

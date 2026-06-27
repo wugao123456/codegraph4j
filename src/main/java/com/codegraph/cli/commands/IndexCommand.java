@@ -64,6 +64,8 @@ public class IndexCommand implements Runnable {
         this.excludePatterns.add("target");
         this.excludePatterns.add("build");
         this.excludePatterns.add("dist");
+        this.excludePatterns.add(".DS_Store");
+          this.excludePatterns.add(".iml");
     }
     
     @Override

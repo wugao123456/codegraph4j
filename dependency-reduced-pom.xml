@@ -28,6 +28,7 @@
               <goal>shade</goal>
             </goals>
             <configuration>
+              <finalName>codegraph4j</finalName>
               <transformers>
                 <transformer>
                   <mainClass>com.codegraph.cli.CodeGraphCli</mainClass>

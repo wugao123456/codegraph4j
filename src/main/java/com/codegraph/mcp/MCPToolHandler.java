@@ -392,7 +392,7 @@ public class MCPToolHandler {
         ExploreOutputBudget budget = ExploreOutputBudget.getForFileCount(fileCount);
         int maxFiles = clamp(intArg(args, "maxFiles", budget.defaultMaxFiles), 1, 20);
 
-        // Step 2: 混合搜索获取子图
+        // Step 2: 混合搜索获取子图 建立初始子图（粗粒度）
         ContextBuilder ctxBuilder = new ContextBuilder(queries);
         ContextBuilder.FindOptions opts = new ContextBuilder.FindOptions();
         opts.searchLimit = 8;
@@ -404,7 +404,7 @@ public class MCPToolHandler {
             return text("No relevant code found for \"" + query + "\"");
         }
 
-        // Step 3: 图感知粘合 — 注入 entry 节点的 callers/callees（同文件内）
+        // Step 3: 图感知粘合 — 注入 entry 节点的 callers/callees（同文件内）填补同文件内的"空隙"（细粒度补全）
         Set<String> glueNodeIds = new LinkedHashSet<>();
         Set<String> subgraphFiles = new LinkedHashSet<>();
         for (Node n : subgraph.nodes.values()) {
@@ -433,7 +433,7 @@ public class MCPToolHandler {
             }
         }
 
-        // Step 4: 命名符号播种 — 从 query 提取 token，解析并注入子图
+        // Step 4: 命名符号播种 — 从 query 提取 token，解析并注入子图 - 充用户命名的其他符号（跨文件补全）
         Set<String> namedSeedIds = new LinkedHashSet<>();
         List<String> tokens = ctxBuilder.extractSymbols(query);
         for (String token : tokens) {
@@ -776,6 +776,18 @@ public class MCPToolHandler {
         return Math.max(lo, Math.min(hi, val));
     }
 
+    /**
+     * 转义 Markdown 特殊字符，防止用户输入的查询字符串被误解析为 Markdown 格式。
+     *
+     * <p>转义规则：
+     * <ul>
+     *   <li>反引号 `` ` `` → `` \` ``</li>
+     *   <li>星号 `*` → `\*`</li>
+     * </ul>
+     *
+     * @param s 待转义的字符串
+     * @return 转义后的字符串，null 输入返回空字符串
+     */
     private static String escape(String s) {
         return s != null ? s.replace("`", "\\`").replace("*", "\\*") : "";
     }
@@ -857,11 +869,26 @@ public class MCPToolHandler {
             || lc.contains("spec") || lc.contains("verify");
     }
 
+    /**
+     * 判断节点是否为配置叶子节点。配置叶子节点通常是 Spring/MicroProfile 中通过
+     * @Value 注入的配置常量，这类节点在代码探索时应被过滤，不参与评分。
+     *
+     * <p>判断条件：
+     * <ul>
+     *   <li>节点类型为 CONSTANT 或 FIELD</li>
+     *   <li>名称以 "${" 开头（如 Spring 占位符）</li>
+     *   <li>限定名包含配置文件后缀（.properties, .yml, .yaml）</li>
+     * </ul>
+     *
+     * @param n 待检测的节点
+     * @return true 表示是配置叶子节点，应在探索时过滤
+     */
     private static boolean isConfigLeafNode(Node n) {
         // Spring/MicroProfile 配置节点（@Value 绑定的常量）
         if (n.getKind() == NodeKind.CONSTANT || n.getKind() == NodeKind.FIELD) {
             String name = n.getName() != null ? n.getName().toLowerCase() : "";
             String qname = n.getQualifiedName() != null ? n.getQualifiedName().toLowerCase() : "";
+            // 检查是否为配置相关的节点
             return name.startsWith("${") || qname.contains(".properties")
                 || qname.contains(".yml") || qname.contains(".yaml");
         }

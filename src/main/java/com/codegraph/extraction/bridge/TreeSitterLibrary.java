@@ -28,6 +28,11 @@ public class TreeSitterLibrary {
 
     private static volatile TreeSitterNative tsNative;
     private static volatile Pointer javaLanguage;
+    /**
+     * 必须持有 grammar 接口的强引用，防止 JNA Cleaner 线程在 GC 后卸载原生库。
+     * 否则 javaLanguage 会变成悬空指针，导致 SIGSEGV。
+     */
+    private static volatile TreeSitterGrammar grammarRef;
 
     private TreeSitterLibrary() {}
 
@@ -86,6 +91,7 @@ public class TreeSitterLibrary {
                 TreeSitterGrammar grammar = Native.load(path, TreeSitterGrammar.class);
                 Pointer lang = grammar.tree_sitter_java();
                 if (lang != null) {
+                    grammarRef = grammar; // 持有强引用，防止原生库被 GC 卸载
                     logger.info("Loaded tree-sitter-java grammar from: {}", path);
                     return lang;
                 }
@@ -146,5 +152,6 @@ public class TreeSitterLibrary {
     public static synchronized void reset() {
         tsNative = null;
         javaLanguage = null;
+        grammarRef = null;
     }
 }

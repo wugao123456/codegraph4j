@@ -12,7 +12,7 @@ import java.sql.SQLException;
 
 @CommandLine.Command(
     name = "init",
-    description = "Initialize CodeGraph for a project"
+    description = "Initialize CodeGraph4j database"
 )
 public class InitCommand implements Runnable {
     
@@ -30,32 +30,63 @@ public class InitCommand implements Runnable {
 
     @Override
     public void run() {
-        logger.info("Initializing CodeGraph for project: {}", projectRoot);
+        logger.info("Initializing CodeGraph4j for project: {}", projectRoot);
         
         File projectDir = new File(projectRoot);
+        
+        // 边界检查：项目目录不存在
         if (!projectDir.exists()) {
-            System.err.println("Project directory does not exist: " + projectRoot);
+            System.err.println("Error: Project directory does not exist: " + projectRoot);
+            System.exit(1);
+            return;
+        }
+        
+        // 边界检查：项目路径不是目录
+        if (!projectDir.isDirectory()) {
+            System.err.println("Error: Project path is not a directory: " + projectRoot);
+            System.exit(1);
             return;
         }
         
         File dbDir = new File(projectDir, ".codegraph");
+        
+        // 边界检查：.codegraph 已存在但不是目录
+        if (dbDir.exists() && !dbDir.isDirectory()) {
+            System.err.println("Error: .codegraph exists but is not a directory: " + dbDir.getAbsolutePath());
+            System.exit(1);
+            return;
+        }
+        
         if (!dbDir.exists()) {
             boolean created = dbDir.mkdirs();
             if (!created) {
-                System.err.println("Failed to create .codegraph directory");
+                System.err.println("Error: Failed to create .codegraph directory: " + dbDir.getAbsolutePath());
+                System.exit(1);
                 return;
             }
         }
         
         File dbFile = new File(dbDir, "codegraph4j.db");
-        if (dbFile.exists() && !force) {
-            System.err.println("Database already exists: " + dbFile.getAbsolutePath());
-            System.err.println("Use -f/--force to overwrite");
-            return;
+        if (dbFile.exists()) {
+            if (!force) {
+                System.err.println("Database already exists: " + dbFile.getAbsolutePath());
+                System.err.println("Use -f/--force to overwrite");
+                System.exit(1);
+                return;
+            }
+            // 强制删除现有数据库
+            boolean deleted = dbFile.delete();
+            if (!deleted) {
+                System.err.println("Error: Failed to delete existing database: " + dbFile.getAbsolutePath());
+                System.err.println("Hint: The file may be locked by another process");
+                System.exit(1);
+                return;
+            }
+            System.out.println("✓ Existing database deleted");
         }
         
-        try {
-            DatabaseConnection db = new DatabaseConnection(dbFile.getAbsolutePath());
+        // 使用 try-with-resources 确保数据库连接正确关闭
+        try (DatabaseConnection db = new DatabaseConnection(dbFile.getAbsolutePath())) {
             db.open();
             
             SchemaManager schemaManager = new SchemaManager(db);
@@ -63,18 +94,21 @@ public class InitCommand implements Runnable {
                 schemaManager.initSchema();
                 System.out.println("✓ Database schema initialized");
             } else {
-                System.out.println("✓ Database already initialized");
+                System.out.println("✓ Database schema ready");
             }
             
-            db.close();
-            
-            System.out.println("✓ CodeGraph initialized successfully");
-            System.out.println("  Project: " + projectRoot);
+            System.out.println("✓ CodeGraph4j initialized successfully");
+            System.out.println("  Project: " + projectDir.getAbsolutePath());
             System.out.println("  Database: " + dbFile.getAbsolutePath());
             
-        } catch (SQLException | IOException e) {
-            logger.error("Failed to initialize CodeGraph", e);
-            System.err.println("Error initializing CodeGraph: " + e.getMessage());
+        } catch (SQLException e) {
+            logger.error("Failed to initialize CodeGraph4j", e);
+            System.err.println("Error: Database error - " + e.getMessage());
+            System.exit(1);
+        } catch (IOException e) {
+            logger.error("Failed to initialize CodeGraph4j", e);
+            System.err.println("Error: I/O error - " + e.getMessage());
+            System.exit(1);
         }
     }
 }

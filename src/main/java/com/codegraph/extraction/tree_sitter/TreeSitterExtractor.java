@@ -70,7 +70,7 @@ public class TreeSitterExtractor {
         }
         logger.trace("[extract] parser created: {}", parser);
 
-        boolean langOk = ts.ts_parser_set_language(parser, language);
+        boolean langOk = ts.ts_parser_set_language(parser, language) != 0;
         if (!langOk) {
             logger.error("[extract] Failed to set language on parser");
             ts.ts_parser_delete(parser);
