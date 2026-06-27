@@ -179,6 +179,15 @@ public class GraphTraverser {
         return callers;
     }
 
+    /**
+     * 递归查找调用者。通过入边（calls, references, imports, instantiates）向上遍历调用链。
+     *
+     * @param nodeId       当前节点ID
+     * @param maxDepth     最大递归深度
+     * @param currentDepth 当前递归深度
+     * @param result       调用者结果收集列表
+     * @param visited      已访问节点集合，防止循环遍历
+     */
     private void getCallersRecursive(String nodeId, int maxDepth, int currentDepth,
                                       List<CallerInfo> result, Set<String> visited) throws SQLException {
         if (currentDepth > maxDepth || visited.contains(nodeId)) return;

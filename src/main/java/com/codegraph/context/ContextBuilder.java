@@ -85,7 +85,6 @@ public class ContextBuilder {
         // Step 2: Exact match 搜索
         Map<String, Node> exactMatches = new LinkedHashMap<>();
         try {
-            List<String> boostedOrder = new ArrayList<>();
             for (String sym : symbols) {
                 List<Node> byQName = queries.getNodesByQualifiedName(sym);
                 List<Node> byName = queries.getNodesByName(sym);
@@ -133,15 +132,19 @@ public class ContextBuilder {
         // Step 3: Prefix match（针对类型定义的模糊匹配）
         try {
             for (String sym : symbols) {
+                // 将符号转换为 Title-Case 形式（首字母大写，其余小写）
+                // 例如: "myVariable" -> "Myvariable"，用于匹配类名等定义
                 String titleCased = sym.length() > 0
                     ? Character.toUpperCase(sym.charAt(0)) + sym.substring(1).toLowerCase()
                     : sym;
-                if (titleCased.equals(sym)) continue; // 已经是 title-case
+                if (titleCased.equals(sym)) continue; // 已经是 title-case，跳过
 
+                // 搜索标题形式的节点
                 List<Node> prefixResults = queries.searchNodes(titleCased);
                 int count = 0;
                 for (Node n : prefixResults) {
                     if (count++ >= options.searchLimit) break;
+                    // 过滤条件：节点不在结果中、是定义类型、名称以 title-case 前缀匹配
                     if (!result.hasNode(n.getId()) &&
                         DEFINITION_KINDS.contains(n.getKind().name()) &&
                         n.getName().toLowerCase().startsWith(titleCased.toLowerCase())) {

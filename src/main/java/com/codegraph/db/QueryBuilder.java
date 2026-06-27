@@ -99,14 +99,22 @@ public class QueryBuilder {
         return null;
     }
 
+    /**
+     * 根据关键词搜索节点。支持在 name、qualified_name、docstring 字段中进行模糊匹配。
+     *
+     * @param query 搜索关键词
+     * @return 匹配的节点列表
+     */
     public List<Node> searchNodes(String query) throws SQLException {
         List<Node> nodes = new ArrayList<>();
         
+        // 构建模糊查询 SQL，搜索名称、限定名、文档字符串
         String sql = "SELECT * FROM nodes WHERE " +
                 "LOWER(name) LIKE ? OR " +
                 "LOWER(qualified_name) LIKE ? OR " +
                 "LOWER(docstring) LIKE ?";
         
+        // 使用 % 前缀后缀实现子串匹配，忽略大小写
         String likePattern = "%" + query.toLowerCase() + "%";
         
         try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
