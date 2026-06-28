@@ -32,6 +32,10 @@ public class QueryBuilder {
         this.db = db;
     }
 
+    public DatabaseConnection getDb() {
+        return db;
+    }
+
     public void insertNode(Node node) throws SQLException {
         String sql = "INSERT OR REPLACE INTO nodes (" +
                 "id, kind, name, qualified_name, file_path, language, " +

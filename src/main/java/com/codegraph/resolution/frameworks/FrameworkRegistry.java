@@ -2,6 +2,10 @@ package com.codegraph.resolution.frameworks;
 
 import com.codegraph.core.types.Language;
 import com.codegraph.resolution.ResolutionContext;
+import com.codegraph.resolution.supportedframeworks.DubboResolver;
+import com.codegraph.resolution.supportedframeworks.OpenFeignResolver;
+import com.codegraph.resolution.supportedframeworks.SpringResolver;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

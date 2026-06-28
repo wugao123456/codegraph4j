@@ -12,6 +12,7 @@ import picocli.CommandLine.Command;
         InitCommand.class,
         IndexCommand.class,
         StatusCommand.class,
+        SyncCommand.class,
         ServeCommand.class,
         TraverseCommand.class
     }

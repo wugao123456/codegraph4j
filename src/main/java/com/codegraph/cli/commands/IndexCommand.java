@@ -1,33 +1,20 @@
 package com.codegraph.cli.commands;
 
-import com.codegraph.core.FileRecord;
-import com.codegraph.core.Node;
-import com.codegraph.core.Edge;
-import com.codegraph.core.types.NodeKind;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
-import com.codegraph.db.SchemaManager;
-import com.codegraph.extraction.CodeParser;
-import com.codegraph.extraction.ParseResult;
-import com.codegraph.extraction.ParserFactory;
-import com.codegraph.resolution.ResolutionContext;
-import com.codegraph.resolution.frameworks.FrameworkExtractionResult;
-import com.codegraph.resolution.frameworks.FrameworkRegistry;
-import com.codegraph.resolution.frameworks.FrameworkResolver;
+import com.codegraph.sync.FileWatcher;
+import com.codegraph.sync.SyncOrchestrator;
+import com.codegraph.sync.SyncResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
 import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
-import java.sql.SQLException;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 @CommandLine.Command(
     name = "index",
@@ -52,22 +39,6 @@ public class IndexCommand implements Runnable {
         defaultValue = "false")
     private boolean watch;
     
-    private ParserFactory parserFactory;
-    private List<String> excludePatterns;
-    
-    public IndexCommand() {
-        this.parserFactory = new ParserFactory();
-        this.excludePatterns = new ArrayList<>();
-        this.excludePatterns.add(".git");
-        this.excludePatterns.add(".codegraph");
-        this.excludePatterns.add("node_modules");
-        this.excludePatterns.add("target");
-        this.excludePatterns.add("build");
-        this.excludePatterns.add("dist");
-        this.excludePatterns.add(".DS_Store");
-          this.excludePatterns.add(".iml");
-    }
-    
     @Override
     public void run() {
         logger.info("========== 开始索引流程 ==========");
@@ -88,253 +59,33 @@ public class IndexCommand implements Runnable {
         System.out.println("Indexing project: " + projectPath);
         
         try (DatabaseConnection db = new DatabaseConnection(dbFile.getAbsolutePath())) {
-            logger.info("[Step 1] 打开数据库连接");
             db.open();
             QueryBuilder queryBuilder = new QueryBuilder(db);
             
-            // 查找所有代码文件
-            logger.info("[Step 2] 扫描代码文件");
-            List<Path> codeFiles = findCodeFiles(projectPath);
-            logger.info("发现 {} 个代码文件", codeFiles.size());
-            System.out.println("Found " + codeFiles.size() + " code files");
+            SyncOrchestrator orchestrator = new SyncOrchestrator();
+            SyncResult result = orchestrator.sync(projectPath, queryBuilder, force, 
+                fileName -> System.out.println("  Indexed: " + fileName));
             
-            int indexedFiles = 0;
-            int skippedFiles = 0;
-            int totalNodes = 0;
-            int totalEdges = 0;
+            db.close();
             
-            for (int i = 0; i < codeFiles.size(); i++) {
-                Path filePath = codeFiles.get(i);
-                logger.info("[Step 3.{}/{}] 处理文件: {}", i + 1, codeFiles.size(), filePath.getFileName());
-                
-                try {
-                    // 计算文件 hash
-                    logger.debug("  计算文件 hash...");
-                    String contentHash = calculateHash(filePath);
-                    logger.debug("  文件 hash: {}", contentHash.substring(0, Math.min(16, contentHash.length())) + "...");
-                    
-                    // 检查是否需要重新索引
-                    FileRecord existingFile = queryBuilder.getFile(filePath.toString());
-                    
-                    if (!force && existingFile != null && existingFile.getHash().equals(contentHash)) {
-                        logger.info("  [跳过] 文件未发生变化");
-                        skippedFiles++;
-                        continue;
-                    }
-                    
-                    if (existingFile != null) {
-                        logger.info("  [更新] 重新索引已变化的文件");
-                    } else {
-                        logger.info("  [新增] 新文件");
-                    }
-                    
-                    // 解析文件
-                    CodeParser parser = parserFactory.getParser(filePath);
-                    if (parser == null) {
-                        logger.warn("  [跳过] 没有支持的解析器");
-                        continue;
-                    }
-                    logger.info("  使用解析器: {} ({})", parser.getClass().getSimpleName(), parser.getLanguage());
-                    
-                    // 读取文件内容
-                    logger.debug("  读取文件内容...");
-                    String content = new String(Files.readAllBytes(filePath));
-                    logger.debug("  文件大小: {} bytes", content.length());
-                    
-                    // 解析文件
-                    logger.info("  开始解析代码符号...");
-                    long parseStart = System.currentTimeMillis();
-                    ParseResult parseResult = parser.parseWithEdges(filePath, content);
-                    List<Node> nodes = parseResult.getNodes();
-                    List<Edge> edges = parseResult.getEdges();
-                    long parseTime = System.currentTimeMillis() - parseStart;
-                    logger.info("  解析完成: 耗时 {}ms, 提取 {} 个符号, {} 条边",
-                        parseTime, nodes.size(), edges.size());
-                    
-                    // 删除旧数据
-                    if (existingFile != null) {
-                        logger.debug("  删除旧的节点和边...");
-                        int deletedNodes = queryBuilder.deleteNodesByFile(filePath.toString());
-                        logger.debug("  删除 {} 个旧节点, {} 条旧边",
-                            deletedNodes, edges.size()); // edges will be deleted via cascade or here
-                    }
-                    
-                    // 保存节点
-                    logger.debug("  保存 {} 个节点到数据库...", nodes.size());
-                    for (Node node : nodes) {
-                        queryBuilder.insertNode(node);
-                        totalNodes++;
-                    }
-                    logger.info("  节点保存完成");
-                    
-                    // 保存边
-                    logger.debug("  保存 {} 条边到数据库...", edges.size());
-                    for (Edge edge : edges) {
-                        try {
-                            queryBuilder.insertEdge(edge);
-                            totalEdges++;
-                        } catch (SQLException e) {
-                            // 外部引用（如 extends BasePo）的 target 可能不在当前索引中，
-                            // FK 约束导致插入失败，这是预期行为
-                            logger.debug("  跳过边 (target 不存在): {} -> {}", edge.getSource(), edge.getTarget());
-                        }
-                    }
-                    logger.info("  边保存完成");
-                    
-                    // 更新文件记录
-                    FileRecord fileRecord = new FileRecord();
-                    fileRecord.setFilePath(filePath.toString());
-                    fileRecord.setHash(contentHash);
-                    fileRecord.setLanguage(parser.getLanguage());
-                    fileRecord.setSize(Files.size(filePath));
-                    fileRecord.setMtime(Files.getLastModifiedTime(filePath).toMillis());
-                    fileRecord.setIndexedAt(System.currentTimeMillis());
-                    // TODO: FileRecord 缺少 nodeCount 字段，待后续添加
-                    
-                    
-                    queryBuilder.insertOrUpdateFile(fileRecord);
-                    indexedFiles++;
-                    
-                    // 提交当前文件的事务
-                    db.commit();
-                    logger.debug("  事务已提交");
-                    
-                    // 按类型统计
-                    long classCount = nodes.stream().filter(n -> n.getKind() == NodeKind.CLASS).count();
-                    long interfaceCount = nodes.stream().filter(n -> n.getKind() == NodeKind.INTERFACE).count();
-                    long methodCount = nodes.stream().filter(n -> n.getKind() == NodeKind.METHOD).count();
-                    long fieldCount = nodes.stream().filter(n -> n.getKind() == NodeKind.FIELD).count();
-                    
-                    System.out.println("  Indexed: " + filePath.getFileName() + " (classes:" + classCount + ", methods:" + methodCount + ", fields:" + fieldCount + ")");
-                    
-                } catch (IOException e) {
-                    logger.error("  [错误] 处理文件失败: {}", e.getMessage(), e);
-                    System.err.println("  Error: " + filePath + " - " + e.getMessage());
-                    db.rollback();
-                }
-            }
-            
-            // ========== 第二阶段：框架提取 ==========
-            logger.info("[Step 4] 开始框架检测与提取");
-            ResolutionContext ctx = new ResolutionContext(queryBuilder, projectPath.toString());
-            FrameworkRegistry registry = new FrameworkRegistry();
-            registry.registerDefaults();
-
-            // 检测项目使用的框架
-            List<FrameworkResolver> detectedFrameworks = registry.detectFrameworks(ctx);
-            logger.info("检测到 {} 个框架: {}", detectedFrameworks.size(),
-                detectedFrameworks.stream().map(FrameworkResolver::getName).collect(Collectors.toList()));
-            System.out.println("Detected frameworks: " +
-                detectedFrameworks.stream().map(FrameworkResolver::getName).collect(Collectors.toList()));
-
-            // 对每个检测到的框架，遍历所有已索引文件进行提取
-            int frameworkNodes = 0;
-            int frameworkEdges = 0;
-            for (FrameworkResolver fw : detectedFrameworks) {
-                logger.info("  [框架: {}] 开始提取...", fw.getName());
-                int fwNodeCount = 0;
-                int fwEdgeCount = 0;
-
-                for (int i = 0; i < codeFiles.size(); i++) {
-                    Path filePath = codeFiles.get(i);
-                    CodeParser parser = parserFactory.getParser(filePath);
-                    if (parser == null) continue;
-
-                    // 检查框架是否支持此文件的语言
-                    List<com.codegraph.core.types.Language> fwLangs = fw.getLanguages();
-                    if (fwLangs != null && !fwLangs.isEmpty() &&
-                        !fwLangs.contains(parser.getLanguage())) {
-                        continue;
-                    }
-
-                    try {
-                        String content = new String(Files.readAllBytes(filePath));
-                        FrameworkExtractionResult fwResult = fw.extract(
-                            filePath.toString(), content, ctx);
-
-                        if (fwResult.getNodes().isEmpty() && fwResult.getReferences().isEmpty()) {
-                            continue;
-                        }
-
-                        // 保存框架特有节点
-                        for (Node node : fwResult.getNodes()) {
-                            queryBuilder.insertNode(node);
-                            totalNodes++;
-                            fwNodeCount++;
-                        }
-
-                        // 保存框架引用（暂作为 references 边存储）
-                        for (com.codegraph.resolution.frameworks.UnresolvedRef ref : fwResult.getReferences()) {
-                            // 尝试解析引用
-                            String targetId = fw.resolve(
-                                ref.getReferenceName(), ref.getReferenceKind(),
-                                ref.getFilePath(), ctx);
-                            if (targetId != null) {
-                                Edge edge = new Edge();
-                                edge.setSource(ref.getFromNodeId());
-                                edge.setTarget(targetId);
-                                edge.setKind(com.codegraph.core.types.EdgeKind.REFERENCES);
-                                edge.setLine(ref.getLine());
-                                edge.setColumn(ref.getColumn());
-                                edge.setProvenance("framework:" + fw.getName());
-                                try {
-                                    queryBuilder.insertEdge(edge);
-                                    totalEdges++;
-                                    fwEdgeCount++;
-                                } catch (SQLException e) {
-                                    logger.debug("  跳过框架边: {}", e.getMessage());
-                                }
-                            }
-                        }
-
-                    } catch (IOException e) {
-                        logger.warn("  框架提取失败: {} — {}", filePath.getFileName(), e.getMessage());
-                    }
-                }
-
-                logger.info("  [框架: {}] 提取完成: {} 个节点, {} 条边", fw.getName(), fwNodeCount, fwEdgeCount);
-                frameworkNodes += fwNodeCount;
-                frameworkEdges += fwEdgeCount;
-            }
-
-            // 框架后处理
-            for (FrameworkResolver fw : detectedFrameworks) {
-                List<Node> postNodes = fw.postExtract(ctx);
-                for (Node node : postNodes) {
-                    try {
-                        queryBuilder.insertNode(node);
-                        totalNodes++;
-                        frameworkNodes++;
-                    } catch (SQLException e) {
-                        logger.warn("  后处理节点插入失败: {}", e.getMessage());
-                    }
-                }
-            }
-
-            db.commit();
-            logger.info("[Step 4] 框架提取完成: {} 个节点, {} 条边", frameworkNodes, frameworkEdges);
-            System.out.println("Framework nodes: " + frameworkNodes + ", edges: " + frameworkEdges);
-
             System.out.println();
             System.out.println("========== 索引完成 ==========");
-            System.out.println("✓ Indexing completed");
-            System.out.println("  处理文件数: " + codeFiles.size());
-            System.out.println("  新增/更新: " + indexedFiles);
-            System.out.println("  跳过(未变化): " + skippedFiles);
-            System.out.println("  总节点数: " + totalNodes);
-            System.out.println("  总边数: " + totalEdges);
+            System.out.println("✓ Indexing completed in " + result.getDurationMs() + "ms");
+            System.out.println("  检查文件数: " + result.getFilesChecked());
+            System.out.println("  新增文件: " + result.getFilesAdded());
+            System.out.println("  修改文件: " + result.getFilesModified());
+            System.out.println("  删除文件: " + result.getFilesRemoved());
+            System.out.println("  更新节点: " + result.getNodesUpdated());
             System.out.println("============================");
             
             logger.info("========== 索引完成 ==========");
-            logger.info("处理文件数: {}, 新增/更新: {}, 跳过: {}", 
-                codeFiles.size(), indexedFiles, skippedFiles);
-            logger.info("总节点数: {}, 总边数: {}", totalNodes, totalEdges);
-            logger.info("============================");
+            logger.info("checked={}, added={}, modified={}, removed={}, nodesUpdated={}, durationMs={}", 
+                result.getFilesChecked(), result.getFilesAdded(), result.getFilesModified(),
+                result.getFilesRemoved(), result.getNodesUpdated(), result.getDurationMs());
             
             if (watch) {
                 System.out.println();
-                System.out.println("Watching for file changes...");
-                watchFiles(projectPath, db);
+                startWatch(projectPath);
             }
             
         } catch (Exception e) {
@@ -343,53 +94,60 @@ public class IndexCommand implements Runnable {
         }
     }
     
-    private List<Path> findCodeFiles(Path projectPath) throws IOException {
-        return Files.walk(projectPath)
-            .filter(Files::isRegularFile)
-            .filter(this::isCodeFile)
-            .filter(this::isNotExcluded)
-            .collect(Collectors.toList());
-    }
-    
-    private boolean isCodeFile(Path path) {
-        String fileName = path.toString().toLowerCase();
-        return fileName.endsWith(".java") || 
-               fileName.endsWith(".js") || 
-               fileName.endsWith(".jsx") ||
-               fileName.endsWith(".ts") ||
-               fileName.endsWith(".tsx") ||
-               fileName.endsWith(".mjs");
-    }
-    
-    private boolean isNotExcluded(Path path) {
-        String pathStr = path.toString();
-        for (String pattern : excludePatterns) {
-            if (pathStr.contains(pattern)) {
-                return false;
+    private void startWatch(Path projectPath) {
+        System.out.println("Watching for file changes...");
+        System.out.println("(Press Ctrl+C to stop)");
+        
+        CountDownLatch latch = new CountDownLatch(1);
+        
+        FileWatcher watcher = new FileWatcher(projectPath, () -> {
+            try {
+                File dbFile = new File(projectPath.toFile(), ".codegraph/codegraph4j.db");
+                try (DatabaseConnection db = new DatabaseConnection(dbFile.getAbsolutePath())) {
+                    db.open();
+                    QueryBuilder queryBuilder = new QueryBuilder(db);
+                    SyncOrchestrator orchestrator = new SyncOrchestrator();
+                    SyncResult result = orchestrator.sync(projectPath, queryBuilder, force, null);
+                    db.close();
+                    return result;
+                }
+            } catch (Exception e) {
+                logger.error("Watch sync failed", e);
+                throw new RuntimeException(e);
             }
+        });
+        
+        watcher.setOnSyncComplete(result -> {
+            System.out.println("[watch] Sync completed: " + 
+                result.getFilesChanged() + " files changed, " + 
+                result.getDurationMs() + "ms");
+        });
+        
+        watcher.setOnSyncError(error -> {
+            System.err.println("[watch] Sync error: " + error.getMessage());
+        });
+        
+        watcher.setOnDegraded(reason -> {
+            System.err.println("[watch] Watcher degraded: " + reason);
+        });
+        
+        boolean started = watcher.start();
+        if (!started) {
+            System.out.println("File watcher could not start. Use 'codegraph4j sync' to manually sync.");
+            return;
         }
-        return true;
-    }
-    
-    private String calculateHash(Path filePath) throws IOException {
-        byte[] bytes = Files.readAllBytes(filePath);
+        
+        // Keep the main thread alive
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            watcher.stop();
+            latch.countDown();
+        }));
+        
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] hash = md.digest(bytes);
-            StringBuilder sb = new StringBuilder();
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            return String.valueOf(new String(bytes).hashCode());
+            latch.await();
+        } catch (InterruptedException e) {
+            watcher.stop();
+            Thread.currentThread().interrupt();
         }
-    }
-    
-    private void watchFiles(Path projectPath, com.codegraph.db.DatabaseConnection db) {
-        // 简单的轮询监听实现
-        // 实际项目中可以使用 WatchService
-        System.out.println("File watching is not fully implemented yet.");
-        System.out.println("Use --force to re-index when files change.");
     }
 }

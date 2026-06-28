@@ -1,10 +1,14 @@
-package com.codegraph.resolution.frameworks;
+package com.codegraph.resolution.supportedframeworks;
 
 import com.codegraph.core.Node;
 import com.codegraph.core.types.Language;
 import com.codegraph.core.types.NodeKind;
 import com.codegraph.core.types.Visibility;
 import com.codegraph.resolution.ResolutionContext;
+import com.codegraph.resolution.frameworks.FrameworkExtractionResult;
+import com.codegraph.resolution.frameworks.FrameworkResolver;
+import com.codegraph.resolution.frameworks.UnresolvedRef;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
