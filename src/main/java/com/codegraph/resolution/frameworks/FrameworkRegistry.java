@@ -91,6 +91,10 @@ public class FrameworkRegistry {
         // Java/Kotlin 框架
         register(new SpringResolver());
 
+        // 远程调用框架
+        register(new OpenFeignResolver());
+        register(new DubboResolver());
+
         // 后续可扩展：PlayResolver、ExpressResolver、DjangoResolver 等
     }
 }

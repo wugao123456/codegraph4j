@@ -66,10 +66,17 @@ public class ResolutionContext {
 
     /**
      * 读取文件内容。用于框架解析器检测时扫描文件特征。
+     * 支持相对路径（相对于 projectRoot）和绝对路径。
      */
-    public String readFile(String relativePath) {
+    public String readFile(String filePath) {
         try {
-            String fullPath = projectRoot + "/" + relativePath;
+            String fullPath;
+            if (filePath.startsWith("/")) {
+                // 绝对路径：直接使用，但需要规范化（去除 ./ 等）
+                fullPath = Paths.get(filePath).normalize().toString();
+            } else {
+                fullPath = projectRoot + "/" + filePath;
+            }
             byte[] bytes = Files.readAllBytes(Paths.get(fullPath));
             return new String(bytes);
         } catch (IOException e) {
