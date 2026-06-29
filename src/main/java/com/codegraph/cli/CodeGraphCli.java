@@ -1,6 +1,8 @@
 package com.codegraph.cli;
 
 import com.codegraph.cli.commands.*;
+import com.codegraph.install.InstallCommand;
+import com.codegraph.install.UninstallCommand;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
@@ -14,7 +16,9 @@ import picocli.CommandLine.Command;
         StatusCommand.class,
         SyncCommand.class,
         ServeCommand.class,
-        TraverseCommand.class
+        TraverseCommand.class,
+        InstallCommand.class,
+        UninstallCommand.class
     }
 )
 public class CodeGraphCli {

@@ -29,7 +29,7 @@ public class MCPServer {
     private final String projectPath;
     private DatabaseConnection db;
     private MCPSession session;
-    public MCPToolHandler toolHandler;
+    private MCPToolHandler toolHandler;
 
     public MCPServer(String projectPath) {
         this.projectPath = projectPath;
@@ -65,12 +65,6 @@ public class MCPServer {
                 db = new DatabaseConnection(dbFile.getAbsolutePath());
                 db.open();
                 logger.info("Database opened: {}", dbFile.getAbsolutePath());
-
-             //
-           //     Map<String, Object> params = new HashMap<>();
-           //     params.put("query", "stream");
-          //      ToolCallResult result = toolHandler.execute("codegraph_explore", params);
-          //      logger.info("Result: {}", result);
                 session = new MCPSession(projectPath, toolHandler);
                 session.start();
 
@@ -110,9 +104,4 @@ public class MCPServer {
         logger.info("MCP server stopped");
     }
 
-    public static void main(String[] args) {
-        MCPServer server = new MCPServer("/Users/wugao-pc/Desktop/Project/stream");
-        server.start();
-
-    }
 }

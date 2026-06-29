@@ -54,6 +54,11 @@ public class MCPToolHandler {
 
     private final String projectPath;
     private final DatabaseConnection db;
+    
+    // 使用 db 获取数据库连接状态，用于 status 工具
+    public DatabaseConnection getDb() {
+        return db;
+    }
     private final QueryBuilder queries;
     private final GraphTraverser traverser;
     private final GraphQueryManager graphManager;
@@ -392,13 +397,13 @@ public class MCPToolHandler {
         ExploreOutputBudget budget = ExploreOutputBudget.getForFileCount(fileCount);
         int maxFiles = clamp(intArg(args, "maxFiles", budget.defaultMaxFiles), 1, 20);
 
-        // Step 2: 混合搜索获取子图 建立初始子图（粗粒度）
+     
         ContextBuilder ctxBuilder = new ContextBuilder(queries);
         ContextBuilder.FindOptions opts = new ContextBuilder.FindOptions();
         opts.searchLimit = 8;
         opts.traversalDepth = 3;
         opts.maxNodes = 200;
-
+        //Step 2: 混合搜索获取子图 建立初始子图先分拆关键字 再按照QualifiedName和name进行搜索后按照相关性排序  再按照前缀排序 最后深度和广度搜索关系
         com.codegraph.context.Subgraph subgraph = ctxBuilder.findRelevantContext(query, opts);
         if (subgraph.nodes.isEmpty()) {
             return text("No relevant code found for \"" + query + "\"");

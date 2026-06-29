@@ -1,7 +1,6 @@
 package com.codegraph.mcp;
 
 import com.codegraph.mcp.MCPTransport.*;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

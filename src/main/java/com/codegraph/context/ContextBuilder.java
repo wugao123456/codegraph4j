@@ -35,6 +35,22 @@ public class ContextBuilder {
         "METHOD", "FUNCTION", "COMPONENT", "CONSTRUCTOR"
     ));
 
+    /**
+     * 相关性计算时使用的边类型集合 — 排除 CONTAINS（AST 父子关系），
+     * 只保留语义关系边，用于 RWR 图相关性计算和子图扩展。
+     */
+    private static final Set<com.codegraph.core.types.EdgeKind> RELEVANT_EDGE_KINDS = new HashSet<>(Arrays.asList(
+        com.codegraph.core.types.EdgeKind.CALLS,
+        com.codegraph.core.types.EdgeKind.REFERENCES,
+        com.codegraph.core.types.EdgeKind.EXTENDS,
+        com.codegraph.core.types.EdgeKind.IMPLEMENTS,
+        com.codegraph.core.types.EdgeKind.OVERRIDES,
+        com.codegraph.core.types.EdgeKind.INSTANTIATES,
+        com.codegraph.core.types.EdgeKind.RETURNS,
+        com.codegraph.core.types.EdgeKind.TYPE_OF,
+        com.codegraph.core.types.EdgeKind.IMPORTS
+    ));
+
     /** 文件扩展名模式（用于 token 解析） */
     private static final Pattern FILE_EXT_PATTERN = Pattern.compile(
         "\\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro)$",
@@ -59,8 +75,19 @@ public class ContextBuilder {
     /**
      * 查找相关上下文 — 混合搜索（exact + prefix + text）+ 图遍历。
      * 对标 codegraph context/index.ts findRelevantContext()。
+     *
+     * <p>设计思路：采用分层搜索策略，从精确到模糊逐步扩展，最后通过图遍历补全上下文。
+     * 核心目标是在有限预算内，最大化返回与用户查询最相关的代码节点和关系。
+     *
+     * <ol>
+     *   <li>符号提取：从查询中提取可识别的代码符号（类名、方法名等）</li>
+     *   <li>精确匹配：按完全限定名和简单名搜索，确保高精准度</li>
+     *   <li>前缀匹配：针对类型定义的 Title-Case 模糊匹配，提高召回率</li>
+     *   <li>图扩展：从搜索结果出发进行 BFS，补全相邻节点和边</li>
+     * </ol>
      */
     public Subgraph findRelevantContext(String query, FindOptions opts) {
+        // 空查询保护：避免无效搜索
         if (query == null || query.trim().isEmpty()) {
             return emptySubgraph();
         }
@@ -69,9 +96,12 @@ public class ContextBuilder {
         Subgraph result = new Subgraph();
 
         // Step 1: 从查询中提取符号名
+        // 设计原因：将自然语言查询转换为代码符号，是后续精确搜索的基础
+        // 提取规则：去除文件扩展名、过滤短 token（<3）、匹配合法标识符模式
         List<String> symbols = extractSymbols(query);
         if (symbols.isEmpty()) {
-            // 没有有效符号，退化为纯文本搜索
+            // 降级策略：无有效符号时，退化为纯文本搜索
+            // 典型场景：用户输入 "how to handle authentication" 这类自然语言问题
             try {
                 List<Node> textResults = queries.searchNodes(query);
                 for (Node n : textResults) result.addNode(n);
@@ -82,10 +112,13 @@ public class ContextBuilder {
             return result;
         }
 
-        // Step 2: Exact match 搜索
+        // Step 2: Exact match 搜索 — 最高优先级，保证精准度
+        // 设计原因：精确匹配是最可靠的搜索方式，优先获取确定性结果
         Map<String, Node> exactMatches = new LinkedHashMap<>();
         try {
             for (String sym : symbols) {
+                // 双重搜索：先按完全限定名（如 com.codegraph.UserService），再按简单名
+                // 原因：qualified name 唯一确定一个符号，普通 name 可能有多个同名
                 List<Node> byQName = queries.getNodesByQualifiedName(sym);
                 List<Node> byName = queries.getNodesByName(sym);
                 Set<String> seen = new HashSet<>();
@@ -97,7 +130,10 @@ public class ContextBuilder {
                 }
             }
 
-            // Co-location boost: 同一文件中命中多个符号，该文件的所有符号加权
+            // Co-location boost: 同文件多符号命中加权
+            // 设计原理：如果一个文件中同时包含查询中的多个符号，说明该文件更可能是用户关心的核心文件
+            // 例如查询 "UserService login"，如果 UserService.java 同时包含 login() 和 getUser() 方法，
+            // 那么 UserService.java 中的所有符号都应优先返回
             if (exactMatches.size() > 1) {
                 Map<String, Set<String>> fileSymbolCounts = new HashMap<>();
                 for (Node n : exactMatches.values()) {
@@ -107,7 +143,7 @@ public class ContextBuilder {
                             .add(n.getName().toLowerCase());
                     }
                 }
-                // 按 co-location 重新排序
+                // 按文件内命中符号数降序排序
                 List<Node> sorted = new ArrayList<>(exactMatches.values());
                 sorted.sort((a, b) -> {
                     int ca = fileSymbolCounts.getOrDefault(a.getFilePath(), Collections.emptySet()).size();
@@ -118,7 +154,9 @@ public class ContextBuilder {
                 for (Node n : sorted) exactMatches.put(n.getId(), n);
             }
 
-            // 截断
+            // 结果截断：限制精确匹配数量
+            // 原因：精确匹配通常已经足够相关，过多结果会增加后续处理负担
+            // 限制为 searchLimit * 2，给 co-location boost 后的排序留出空间
             int limit = (int) Math.ceil(options.searchLimit * 2.0);
             int count = 0;
             for (Map.Entry<String, Node> e : exactMatches.entrySet()) {
@@ -129,25 +167,29 @@ public class ContextBuilder {
             logger.warn("Exact match failed: {}", e.getMessage());
         }
 
-        // Step 3: Prefix match（针对类型定义的模糊匹配）
+        // Step 3: Prefix match — 针对类型定义的模糊匹配
+        // 设计原因：用户可能只记得类型名的一部分，如 "Rest" → "RestController"
+        // 只针对定义类型（class/interface/enum 等），避免匹配变量名导致噪音
         try {
             for (String sym : symbols) {
-                // 将符号转换为 Title-Case 形式（首字母大写，其余小写）
-                // 例如: "myVariable" -> "Myvariable"，用于匹配类名等定义
-                String titleCased = sym.length() > 0
-                    ? Character.toUpperCase(sym.charAt(0)) + sym.substring(1).toLowerCase()
-                    : sym;
-                if (titleCased.equals(sym)) continue; // 已经是 title-case，跳过
+                // 确定前缀匹配模式：
+                // - 全小写短词（如 "rest"）：转换为 Title-Case "Rest" 进行前缀匹配
+                // - 已首字母大写（如 "Rest"）：直接用原符号进行前缀匹配
+                // - camelCase（如 "userService"）：用首字母大写形式 "UserService" 进行前缀匹配
+                // - 已包含大写字母的长词：直接用原符号
+                String prefixPattern = determinePrefixPattern(sym);
+                if (prefixPattern == null) continue;
 
-                // 搜索标题形式的节点
-                List<Node> prefixResults = queries.searchNodes(titleCased);
+                // 文本搜索获取候选，再做前缀过滤
+                List<Node> prefixResults = queries.searchNodes(prefixPattern);
                 int count = 0;
                 for (Node n : prefixResults) {
                     if (count++ >= options.searchLimit) break;
-                    // 过滤条件：节点不在结果中、是定义类型、名称以 title-case 前缀匹配
+                    // 三重过滤：去重 + 定义类型 + 前缀匹配
+                    // 确保只添加有意义的类型定义节点
                     if (!result.hasNode(n.getId()) &&
                         DEFINITION_KINDS.contains(n.getKind().name()) &&
-                        n.getName().toLowerCase().startsWith(titleCased.toLowerCase())) {
+                        n.getName().toLowerCase().startsWith(prefixPattern.toLowerCase())) {
                         result.addNode(n);
                     }
                 }
@@ -156,22 +198,30 @@ public class ContextBuilder {
             logger.warn("Prefix match failed: {}", e.getMessage());
         }
 
-        // 设置入口节点
+        // 设置入口节点：将所有搜索结果标记为 root，作为后续图遍历的起点
         for (String id : result.nodes.keySet()) {
             result.addRoot(id);
         }
 
         // Step 4: 从入口节点 BFS 扩展子图
+        // 设计原因：搜索结果可能只是孤立的节点，需要通过图遍历补全上下文关系
+        // 例如找到 UserService.login()，需要扩展到其调用的 AuthService 和被调用的位置
         if (result.nodeCount() > 0) {
             Set<String> allRootIds = new LinkedHashSet<>(result.roots);
 
             // 对每个入口节点做 BFS 扩展
+            // 限制每个根节点的扩展数量：maxNodes / rootCount
+            // 原因：避免某个热门节点（如 Utils 类）过度扩展，挤占其他节点的预算
             for (String rootId : new ArrayList<>(allRootIds)) {
                 TraversalOptions tOpts = new TraversalOptions();
                 tOpts.maxDepth = options.traversalDepth;
                 tOpts.limit = options.maxNodes / Math.max(1, allRootIds.size());
-                tOpts.direction = "both"; // 无向遍历
+                tOpts.direction = "both"; // 无向遍历：同时获取 callers 和 callees
                 tOpts.includeStart = true;
+                // 边类型过滤：只包含语义关系边，排除 CONTAINS（AST 父子关系）
+                // 原因：CONTAINS 边会导致子图膨胀，包含大量无关的方法/字段节点
+                // 仅保留：calls, references, extends, implements, overrides, instantiates, returns, type_of, imports
+                tOpts.edgeKinds = RELEVANT_EDGE_KINDS;
 
                 com.codegraph.graph.GraphTraverser.Subgraph sg = traverser.traverseBFS(rootId, tOpts);
                 for (Node n : sg.nodes.values()) result.addNode(n);
@@ -268,16 +318,47 @@ public class ContextBuilder {
 
     /**
      * 从查询字符串中提取有效符号名。
+     *
+     * <p>设计思路：将用户输入的自然语言查询或代码片段解析为可识别的代码符号，
+     * 作为后续混合搜索的基础输入。核心步骤：
+     * <ol>
+     *   <li>分词：按空白、逗号、括号等分隔符切分</li>
+     *   <li>清理：去除文件扩展名（如 `.java`）</li>
+     *   <li>验证：过滤短 token（<3），匹配 Java 标识符模式</li>
+     *   <li>限制：最多提取 16 个符号，避免搜索范围过大</li>
+     * </ol>
+     *
+     * <p>支持的符号格式：
+     * <ul>
+     *   <li>简单标识符：`UserService`, `login`, `MAX_SIZE`</li>
+     *   <li>完全限定名：`com.codegraph.UserService`, `java.util.List`</li>
+     *   <li>带分隔符的路径：`UserService.login`, `User::getName`</li>
+     * </ul>
+     *
+     * @param query 用户查询字符串
+     * @return 有效符号列表，最多 16 个
      */
     public List<String> extractSymbols(String query) {
+        // 空查询保护
         if (query == null) return Collections.emptyList();
+
+        // 分词：按空白、逗号、括号、方括号等常见分隔符切分
+        // 例如："UserService.login() with auth" → ["UserService.login", "with", "auth"]
         String[] parts = query.split("[\\s,()\\[\\]]+");
         List<String> symbols = new ArrayList<>();
+
         for (String raw : parts) {
+            // 清理：去除文件扩展名（如 "User.java" → "User"）
+            // 原因：用户可能粘贴文件路径，需要提取纯符号名
             String t = FILE_EXT_PATTERN.matcher(raw).replaceAll("").trim();
+
+            // 双重验证：
+            // 1. 长度 ≥3：过滤无意义的短词（如 "a", "of", "to"）
+            // 2. 匹配有效标识符模式：确保是合法的代码符号
             if (t.length() >= 3 && VALID_TOKEN_PATTERN.matcher(t).matches()) {
                 symbols.add(t);
-                if (symbols.size() >= 16) break; // 最多 16 个 token
+                // 限制最多 16 个符号：避免搜索范围过大，影响性能和相关性
+                if (symbols.size() >= 16) break;
             }
         }
         return symbols;
@@ -285,6 +366,43 @@ public class ContextBuilder {
 
     private static Subgraph emptySubgraph() {
         return new Subgraph();
+    }
+
+    /**
+     * 根据符号确定前缀匹配模式。
+     * 优化策略：
+     * - 全小写短词（如 "rest"）：转换为 Title-Case "Rest"，匹配 PascalCase 类型名
+     * - 首字母大写（如 "Rest"）：保留原符号，支持前缀匹配 "RestController"
+     * - camelCase（如 "userService"）：首字母大写为 "UserService"，匹配类型定义
+     * - 全大写（如 "HTTP"）：跳过，通常是常量而非类型定义
+     *
+     * @return 前缀匹配模式字符串，不需要前缀匹配时返回 null
+     */
+    private String determinePrefixPattern(String symbol) {
+        if (symbol == null || symbol.length() < 2) return null;
+
+        boolean hasUpperCase = false;
+        boolean hasLowerCase = false;
+        for (char c : symbol.toCharArray()) {
+            if (Character.isUpperCase(c)) hasUpperCase = true;
+            if (Character.isLowerCase(c)) hasLowerCase = true;
+        }
+
+        // 全大写：通常是常量，不做前缀匹配
+        if (hasUpperCase && !hasLowerCase) return null;
+
+        // 首字母大写：直接使用原符号
+        if (Character.isUpperCase(symbol.charAt(0))) {
+            return symbol;
+        }
+
+        // 首字母小写且包含大写（camelCase）：首字母大写
+        if (hasUpperCase) {
+            return Character.toUpperCase(symbol.charAt(0)) + symbol.substring(1);
+        }
+
+        // 全小写：转换为 Title-Case
+        return Character.toUpperCase(symbol.charAt(0)) + symbol.substring(1);
     }
 
     // ========== 内部类 ==========
