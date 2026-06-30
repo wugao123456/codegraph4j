@@ -28,8 +28,7 @@ public class ServeCommand implements Runnable {
     private String projectRoot;
 
     @CommandLine.Option(names = {"--mcp"},
-        description = "Run as MCP server (stdio transport)",
-        defaultValue = "true")
+        description = "Run as MCP server (stdio transport)")
     private boolean mcp;
 
     @Override
