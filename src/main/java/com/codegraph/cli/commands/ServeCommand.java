@@ -1,6 +1,5 @@
 package com.codegraph.cli.commands;
 
-import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
@@ -9,8 +8,6 @@ import ch.qos.logback.core.rolling.TimeBasedRollingPolicy;
 import com.codegraph.mcp.MCPServer;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
-
-import java.nio.file.Paths;
 
 /**
  * MCP 服务器启动命令。
@@ -83,21 +80,36 @@ public class ServeCommand implements Runnable {
      * 将 logback 日志输出重定向到文件。
      * MCP 协议通过 stdio 传输 JSON-RPC，stderr 上的任何输出都会被
      * MCP 客户端视为错误并断开连接。
+     *
+     * 日志存放在 .codegraph/logs/ 下，按日期滚动，保留最近 5 个文件。
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private void redirectLogsToFile() {
         LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
         Logger rootLogger = context.getLogger(Logger.ROOT_LOGGER_NAME);
 
-        // 日志文件路径：<project>/.codegraph/codegraph4j-mcp.log
-        String logPath = Paths.get(projectRoot, ".codegraph", "codegraph4j-mcp.log").toString();
+        // 确保 logs 目录存在
+        java.io.File logDir = new java.io.File(projectRoot, ".codegraph/logs");
+        logDir.mkdirs();
 
-        // 创建文件 appender
-        ch.qos.logback.core.FileAppender fileAppender = new ch.qos.logback.core.FileAppender();
+        // 日志文件路径：<project>/.codegraph/logs/codegraph4j-mcp.log
+        String logPath = new java.io.File(logDir, "codegraph4j-mcp.log").getAbsolutePath();
+
+        // 创建滚动文件 appender（按日期滚动，保留 5 个历史文件）
+        RollingFileAppender fileAppender = new RollingFileAppender();
         fileAppender.setName("MCP_FILE");
         fileAppender.setContext(context);
         fileAppender.setFile(logPath);
         fileAppender.setAppend(true);
+
+        TimeBasedRollingPolicy rollingPolicy = new TimeBasedRollingPolicy();
+        rollingPolicy.setContext(context);
+        rollingPolicy.setFileNamePattern(logPath + ".%d{yyyy-MM-dd}");
+        rollingPolicy.setMaxHistory(5);
+        rollingPolicy.setParent(fileAppender);
+        rollingPolicy.start();
+
+        fileAppender.setRollingPolicy(rollingPolicy);
 
         PatternLayoutEncoder encoder = new PatternLayoutEncoder();
         encoder.setContext(context);
