@@ -20,7 +20,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.SQLException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * MCP 工具处理器 — 注册和执行所有 MCP 工具。
@@ -50,6 +54,22 @@ public class MCPToolHandler {
             DEFAULT_MCP_TOOLS.clear();
             DEFAULT_MCP_TOOLS.addAll(Arrays.asList(env.split(",")));
         }
+    }
+
+    private static final int EXPLORE_LOG_MAX_FILES;
+    private static final DateTimeFormatter EXPLORE_LOG_DATE_FORMATTER =
+        DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS");
+
+    static {
+        int maxFiles = 10;
+        String env = System.getenv("CODEGRAPH_EXPLORE_LOG_MAX_FILES");
+        if (env != null && !env.isEmpty()) {
+            try {
+                maxFiles = Integer.parseInt(env.trim());
+                if (maxFiles < 1) maxFiles = 1;
+            } catch (NumberFormatException ignored) {}
+        }
+        EXPLORE_LOG_MAX_FILES = maxFiles;
     }
 
     private final String projectPath;
@@ -772,10 +792,67 @@ public class MCPToolHandler {
             lines.add("*Explore output budget: " + totalChars + "/" + budget.maxOutputChars + " chars, " + filesIncluded + "/" + maxFiles + " files.*");
         }
 
-        return text(joinStrings(lines));
+        String resultText = joinStrings(lines);
+        writeExploreLog(query, resultText);
+        return text(resultText);
     }
 
     // ============ handleExplore 辅助方法 ============
+
+    private void writeExploreLog(String query, String content) {
+        try {
+            Path logsDir = Paths.get(projectPath, ".codegraph", "logs");
+            if (!Files.exists(logsDir)) {
+                Files.createDirectories(logsDir);
+            }
+
+            String timestamp = LocalDateTime.now().format(EXPLORE_LOG_DATE_FORMATTER);
+            String safeQuery = query.replaceAll("[^a-zA-Z0-9_\\-]", "_")
+                .substring(0, Math.min(query.length(), 50));
+            String fileName = "explore_" + timestamp + "_" + safeQuery + ".md";
+            Path logFile = logsDir.resolve(fileName);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("# CodeGraph Explore Result\n\n");
+            sb.append("## Metadata\n\n");
+            sb.append("| Field | Value |\n");
+            sb.append("|-------|-------|\n");
+            sb.append("| **Tool** | codegraph_explore |\n");
+            sb.append("| **Query** | ").append(escape(query)).append(" |\n");
+            sb.append("| **Timestamp** | ").append(LocalDateTime.now().format(
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append(" |\n");
+            sb.append("\n");
+            sb.append("## Content\n\n");
+            sb.append(content);
+
+            Files.write(logFile, sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+            rotateExploreLogs(logsDir);
+        } catch (IOException e) {
+            logger.warn("Failed to write explore log: {}", e.getMessage());
+        }
+    }
+
+    private static void rotateExploreLogs(Path logsDir) {
+        try (Stream<Path> stream = Files.list(logsDir)) {
+            List<Path> logFiles = stream
+                .filter(p -> p.getFileName().toString().startsWith("explore_"))
+                .filter(Files::isRegularFile)
+                .sorted(Comparator.comparing(p -> p.getFileName().toString()))
+                .collect(Collectors.toList());
+
+            while (logFiles.size() > EXPLORE_LOG_MAX_FILES) {
+                Path oldest = logFiles.remove(0);
+                try {
+                    Files.delete(oldest);
+                } catch (IOException e) {
+                    logger.warn("Failed to delete old explore log: {}", oldest);
+                }
+            }
+        } catch (IOException e) {
+            logger.warn("Failed to rotate explore logs: {}", e.getMessage());
+        }
+    }
 
     private static int clamp(int val, int lo, int hi) {
         return Math.max(lo, Math.min(hi, val));
