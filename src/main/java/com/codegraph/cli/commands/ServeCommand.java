@@ -1,9 +1,16 @@
 package com.codegraph.cli.commands;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
+import ch.qos.logback.core.rolling.RollingFileAppender;
+import ch.qos.logback.core.rolling.TimeBasedRollingPolicy;
 import com.codegraph.mcp.MCPServer;
-import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
+
+import java.nio.file.Paths;
 
 /**
  * MCP 服务器启动命令。
@@ -20,7 +27,7 @@ import picocli.CommandLine;
 )
 public class ServeCommand implements Runnable {
 
-    private static final Logger logger = LoggerFactory.getLogger(ServeCommand.class);
+    private static final org.slf4j.Logger logger = LoggerFactory.getLogger(ServeCommand.class);
 
     @CommandLine.Option(names = {"-p", "--project"},
         description = "Project root directory",
@@ -63,11 +70,56 @@ public class ServeCommand implements Runnable {
             return;
         }
 
-        // stdio 模式：启动 MCP 服务器
+        // stdio 模式：将日志重定向到文件，避免污染 MCP 的 stdio 通道
+        redirectLogsToFile();
+
         logger.info("Starting MCP server in stdio mode for project: {}", projectRoot);
 
         MCPServer server = new MCPServer(projectRoot);
         server.start();
+    }
+
+    /**
+     * 将 logback 日志输出重定向到文件。
+     * MCP 协议通过 stdio 传输 JSON-RPC，stderr 上的任何输出都会被
+     * MCP 客户端视为错误并断开连接。
+     */
+    @SuppressWarnings("unchecked")
+    private void redirectLogsToFile() {
+        LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
+        Logger rootLogger = context.getLogger(Logger.ROOT_LOGGER_NAME);
+
+        // 日志文件路径：<project>/.codegraph/codegraph4j-mcp.log
+        String logPath = Paths.get(projectRoot, ".codegraph", "codegraph4j-mcp.log").toString();
+
+        // 创建文件 appender
+        ch.qos.logback.core.FileAppender fileAppender = new ch.qos.logback.core.FileAppender();
+        fileAppender.setName("MCP_FILE");
+        fileAppender.setContext(context);
+        fileAppender.setFile(logPath);
+        fileAppender.setAppend(true);
+
+        PatternLayoutEncoder encoder = new PatternLayoutEncoder();
+        encoder.setContext(context);
+        encoder.setPattern("%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n");
+        encoder.start();
+
+        fileAppender.setEncoder(encoder);
+        fileAppender.start();
+
+        // 移除所有 ConsoleAppender，防止日志污染 MCP stdio
+        rootLogger.detachAppender("STDOUT");
+        context.getLogger("com.codegraph").detachAppender("STDOUT");
+        context.getLogger("com.codegraph.parser").detachAppender("STDOUT");
+        context.getLogger("com.codegraph.db").detachAppender("STDOUT");
+        context.getLogger("com.codegraph.cli").detachAppender("STDOUT");
+
+        // 为 com.codegraph 日志添加文件输出
+        ch.qos.logback.classic.Logger codeGraphLogger = context.getLogger("com.codegraph");
+        codeGraphLogger.addAppender(fileAppender);
+        codeGraphLogger.setAdditive(false);
+
+        rootLogger.addAppender(fileAppender);
     }
 
     private String findJarPath() {

@@ -160,7 +160,8 @@ public class MCPSession implements MCPTransport.MessageHandler {
         sb.append("Use `codegraph_explore` for most questions. It returns contextual source code.\n\n");
 
         sb.append("## Available Tools\n\n");
-        for (ToolDefinition tool : toolHandler.getTools()) {
+        List<ToolDefinition> tools = toolHandler != null ? toolHandler.getTools() : Collections.emptyList();
+        for (ToolDefinition tool : tools) {
             sb.append("- **").append(tool.name).append("**: ").append(tool.description).append("\n");
         }
 

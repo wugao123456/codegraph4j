@@ -1,5 +1,6 @@
 package com.codegraph.mcp;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -28,9 +29,9 @@ public class MCPTransport {
         public Object result;
         public JsonRpcError error;
 
-        public boolean isRequest() { return method != null && id != null; }
-        public boolean isNotification() { return method != null && id == null; }
-        public boolean isResponse() { return method == null && (result != null || error != null); }
+        @JsonIgnore public boolean isRequest() { return method != null && id != null; }
+        @JsonIgnore public boolean isNotification() { return method != null && id == null; }
+        @JsonIgnore public boolean isResponse() { return method == null && (result != null || error != null); }
     }
 
     public static class JsonRpcError {

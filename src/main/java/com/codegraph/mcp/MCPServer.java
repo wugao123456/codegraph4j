@@ -65,6 +65,9 @@ public class MCPServer {
                 db = new DatabaseConnection(dbFile.getAbsolutePath());
                 db.open();
                 logger.info("Database opened: {}", dbFile.getAbsolutePath());
+
+                QueryBuilder queries = new QueryBuilder(db);
+                toolHandler = new MCPToolHandler(projectPath, db, queries);
                 session = new MCPSession(projectPath, toolHandler);
                 session.start();
 
