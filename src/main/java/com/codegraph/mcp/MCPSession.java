@@ -30,7 +30,7 @@ public class MCPSession implements MCPTransport.MessageHandler {
     private final StdioTransport transport;
     private final MCPToolHandler toolHandler;
     private State state = State.UNINITIALIZED;
-    private String clientName = "unknown";
+    private String clientName = "codegraph4j";
     private String projectPath;
 
     public MCPSession(String projectPath, MCPToolHandler toolHandler) {
@@ -156,8 +156,24 @@ public class MCPSession implements MCPTransport.MessageHandler {
 
     private String buildInstructions() {
         StringBuilder sb = new StringBuilder();
-        sb.append("# CodeGraph MCP Server\n\n");
-        sb.append("Use `codegraph_explore` for most questions. It returns contextual source code.\n\n");
+        sb.append("# CodeGraph4j — Semantic Code Knowledge Graph\n\n");
+
+        sb.append("## When to Use CodeGraph\n\n");
+        sb.append("In repositories indexed by CodeGraph ");
+        sb.append("(a `.codegraph/` directory exists at the repo root), ");
+        sb.append("reach for it **BEFORE** grep/find or reading files ");
+        sb.append("when you need to understand or locate code.\n\n");
+
+        sb.append("- **MCP tool**: `codegraph_explore` — ");
+        sb.append("answers most code questions in one call, returning ");
+        sb.append("the relevant symbols' verbatim source grouped by file, ");
+        sb.append("plus call paths between them and a blast-radius summary. ");
+        sb.append("Name a file or symbol in the query to read its current line-numbered source.\n");
+        sb.append("- **Shell**: `codegraph explore \"<query>\"` prints the same output ");
+        sb.append("(for sub-agents and non-MCP harnesses).\n\n");
+
+        sb.append("If there is no `.codegraph/` directory, skip CodeGraph entirely ");
+        sb.append("— indexing is the user's decision.\n\n");
 
         sb.append("## Available Tools\n\n");
         List<ToolDefinition> tools = toolHandler != null ? toolHandler.getTools() : Collections.emptyList();
