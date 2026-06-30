@@ -1,10 +1,5 @@
 package com.codegraph.cli.commands;
 
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.LoggerContext;
-import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
-import ch.qos.logback.core.rolling.RollingFileAppender;
-import ch.qos.logback.core.rolling.TimeBasedRollingPolicy;
 import com.codegraph.mcp.MCPServer;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -67,72 +62,16 @@ public class ServeCommand implements Runnable {
             return;
         }
 
-        // stdio 模式：将日志重定向到文件，避免污染 MCP 的 stdio 通道
-        redirectLogsToFile();
+        // stdio 模式：移除控制台输出，避免污染 MCP 的 stdio 通道
+        // 文件日志已在 MCPServer 构造函数中自动配置
+        MCPServer server = new MCPServer(projectRoot);
+        server.detachConsole();
 
         logger.info("Starting MCP server in stdio mode for project: {}", projectRoot);
 
-        MCPServer server = new MCPServer(projectRoot);
         server.start();
     }
 
-    /**
-     * 将 logback 日志输出重定向到文件。
-     * MCP 协议通过 stdio 传输 JSON-RPC，stderr 上的任何输出都会被
-     * MCP 客户端视为错误并断开连接。
-     *
-     * 日志存放在 .codegraph/logs/ 下，按日期滚动，保留最近 5 个文件。
-     */
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private void redirectLogsToFile() {
-        LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
-        Logger rootLogger = context.getLogger(Logger.ROOT_LOGGER_NAME);
-
-        // 确保 logs 目录存在
-        java.io.File logDir = new java.io.File(projectRoot, ".codegraph/logs");
-        logDir.mkdirs();
-
-        // 日志文件路径：<project>/.codegraph/logs/codegraph4j-mcp.log
-        String logPath = new java.io.File(logDir, "codegraph4j-mcp.log").getAbsolutePath();
-
-        // 创建滚动文件 appender（按日期滚动，保留 5 个历史文件）
-        RollingFileAppender fileAppender = new RollingFileAppender();
-        fileAppender.setName("MCP_FILE");
-        fileAppender.setContext(context);
-        fileAppender.setFile(logPath);
-        fileAppender.setAppend(true);
-
-        TimeBasedRollingPolicy rollingPolicy = new TimeBasedRollingPolicy();
-        rollingPolicy.setContext(context);
-        rollingPolicy.setFileNamePattern(logPath + ".%d{yyyy-MM-dd}");
-        rollingPolicy.setMaxHistory(5);
-        rollingPolicy.setParent(fileAppender);
-        rollingPolicy.start();
-
-        fileAppender.setRollingPolicy(rollingPolicy);
-
-        PatternLayoutEncoder encoder = new PatternLayoutEncoder();
-        encoder.setContext(context);
-        encoder.setPattern("%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n");
-        encoder.start();
-
-        fileAppender.setEncoder(encoder);
-        fileAppender.start();
-
-        // 移除所有 ConsoleAppender，防止日志污染 MCP stdio
-        rootLogger.detachAppender("STDOUT");
-        context.getLogger("com.codegraph").detachAppender("STDOUT");
-        context.getLogger("com.codegraph.parser").detachAppender("STDOUT");
-        context.getLogger("com.codegraph.db").detachAppender("STDOUT");
-        context.getLogger("com.codegraph.cli").detachAppender("STDOUT");
-
-        // 为 com.codegraph 日志添加文件输出
-        ch.qos.logback.classic.Logger codeGraphLogger = context.getLogger("com.codegraph");
-        codeGraphLogger.addAppender(fileAppender);
-        codeGraphLogger.setAdditive(false);
-
-        rootLogger.addAppender(fileAppender);
-    }
 
     private String findJarPath() {
         // 尝试查找 jar 文件

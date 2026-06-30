@@ -16,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -104,7 +105,7 @@ public class MCPToolHandler {
         if (isEnabled("node")) tools.add(nodeTool());
         if (isEnabled("status")) tools.add(statusTool());
         if (isEnabled("files")) tools.add(filesTool());
-
+        logger.info("Enabled tools: {}", tools);
         return tools;
     }
 
@@ -411,11 +412,16 @@ public class MCPToolHandler {
 
     private ToolCallResult handleExplore(Map<String, Object> args) throws SQLException {
         String query = requireArg(args, "query");
+        long startTime = System.currentTimeMillis();
+        
+        logger.info("[codegraph_explore] 开始处理查询: query=\"{}\"", query);
 
         // Step 1: 自适应输出预算
         int fileCount = countIndexedFiles();
         ExploreOutputBudget budget = ExploreOutputBudget.getForFileCount(fileCount);
         int maxFiles = clamp(intArg(args, "maxFiles", budget.defaultMaxFiles), 1, 20);
+        logger.info("[codegraph_explore] Step 1 - 自适应预算: fileCount={}, maxFiles={}, maxOutputChars={}", 
+            fileCount, maxFiles, budget.maxOutputChars);
 
      
         ContextBuilder ctxBuilder = new ContextBuilder(queries);
@@ -426,8 +432,11 @@ public class MCPToolHandler {
         //Step 2: 混合搜索获取子图 建立初始子图先分拆关键字 再按照QualifiedName和name进行搜索后按照相关性排序  再按照前缀排序 最后深度和广度搜索关系
         com.codegraph.context.Subgraph subgraph = ctxBuilder.findRelevantContext(query, opts);
         if (subgraph.nodes.isEmpty()) {
+            logger.info("[codegraph_explore] Step 2 - 未找到相关代码: query=\"{}\"", query);
             return text("No relevant code found for \"" + query + "\"");
         }
+        logger.info("[codegraph_explore] Step 2 - 混合搜索完成: nodes={}, edges={}, roots={}", 
+            subgraph.nodes.size(), subgraph.edges.size(), subgraph.roots.size());
 
         // Step 3: 图感知粘合 — 注入 entry 节点的 callers/callees（同文件内）填补同文件内的"空隙"（细粒度补全）
         Set<String> glueNodeIds = new LinkedHashSet<>();
@@ -457,6 +466,8 @@ public class MCPToolHandler {
                 glueNodeIds.add(ci.node.getId());
             }
         }
+        logger.info("[codegraph_explore] Step 3 - 图感知粘合完成: glueNodes={}, subgraphFiles={}", 
+            glueNodeIds.size(), subgraphFiles.size());
 
         // Step 4: 命名符号播种 — 从 query 提取 token，解析并注入子图 - 充用户命名的其他符号（跨文件补全）
         Set<String> namedSeedIds = new LinkedHashSet<>();
@@ -477,6 +488,8 @@ public class MCPToolHandler {
                 }
             } catch (SQLException ignored) {}
         }
+        logger.info("[codegraph_explore] Step 4 - 命名符号播种完成: tokens={}, namedSeeds={}", 
+            tokens.size(), namedSeedIds.size());
 
         // Step 5: 节点按文件分组 + 评分
         Map<String, FileGroup> fileGroups = new LinkedHashMap<>();
@@ -518,6 +531,7 @@ public class MCPToolHandler {
         }
 
         // 测试文件过滤
+        int beforeFilterSize = relevantFiles.size();
         if (budget.excludeLowValueFiles && !mentionsTests(query)) {
             List<Map.Entry<String, FileGroup>> nonLow = new ArrayList<>();
             for (Map.Entry<String, FileGroup> e : relevantFiles) {
@@ -525,6 +539,8 @@ public class MCPToolHandler {
             }
             if (nonLow.size() >= 2) relevantFiles = nonLow;
         }
+        logger.info("[codegraph_explore] Step 5 - 文件分组评分完成: fileGroups={}, relevantFiles={}, 过滤掉={}", 
+            fileGroups.size(), relevantFiles.size(), beforeFilterSize - relevantFiles.size());
 
         // Step 6: RWR 图相关性
         Map<String, Double> nodeRwr = new GraphRelevanceComputer().compute(
@@ -572,6 +588,7 @@ public class MCPToolHandler {
         }
 
         // 相关性门控
+        int beforeGateSize = relevantFiles.size();
         if (maxGraph > 0) {
             List<Map.Entry<String, FileGroup>> gated = new ArrayList<>();
             for (Map.Entry<String, FileGroup> e : relevantFiles) {
@@ -584,6 +601,8 @@ public class MCPToolHandler {
             }
             if (gated.size() >= 2) relevantFiles = gated;
         }
+        logger.info("[codegraph_explore] Step 6 - RWR图相关性完成: centralFiles={}, entryFiles={}, 门控后文件数={}, maxGraph={}", 
+            centralFiles.size(), entryFiles.size(), relevantFiles.size(), String.format("%.4f", maxGraph));
 
         // Step 7: 文件排序
         // Tier 1: agent 命名的文件
@@ -618,6 +637,7 @@ public class MCPToolHandler {
             if (a.getValue().score != b.getValue().score) return b.getValue().score - a.getValue().score;
             return b.getValue().nodes.size() - a.getValue().nodes.size();
         });
+        logger.info("[codegraph_explore] Step 7 - 文件排序完成: 待输出文件数={}", relevantFiles.size());
 
         // Step 8: 构建输出段落
         List<String> lines = new ArrayList<>();
@@ -794,6 +814,11 @@ public class MCPToolHandler {
 
         String resultText = joinStrings(lines);
         writeExploreLog(query, resultText);
+        
+        long elapsed = System.currentTimeMillis() - startTime;
+        logger.info("[codegraph_explore] 处理完成: query=\"{}\", 输出字符数={}, 文件数={}, 耗时={}ms", 
+            query, resultText.length(), filesIncluded, elapsed);
+        
         return text(resultText);
     }
 

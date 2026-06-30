@@ -21,9 +21,9 @@ public class MCPToolHandlerTest {
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     public static void main(String[] args) {
-        String projectPath = "/Users/wugao-pc/Desktop/Project/knowGraph";
+        String projectPath = "/Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j";
         DatabaseConnection db = new DatabaseConnection(
-                "/Users/wugao-pc/Desktop/Project/stream/.codegraph/codegraph4j.db");
+                "/Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/.codegraph/codegraph4j.db");
         try {
             db.open();
         } catch (Exception e) {
@@ -36,7 +36,7 @@ public class MCPToolHandlerTest {
         MCPToolHandler toolHandler = new MCPToolHandler(
                 projectPath, db, queries);
         Map<String, Object> args1 = new HashMap<>();
-        args1.put("query", "Consumer refershConfig");
+        args1.put("query", "exploreTool");
         ToolCallResult result = toolHandler.execute("codegraph_explore", args1);
 
         System.out.println(result);

@@ -73,7 +73,7 @@ CodeGraph4j 是 [codegraph](https://github.com/colbymchenry/codegraph) 的 Java 
 ```bash
 git clone https://github.com/codegraph/codegraph4j.git
 cd codegraph4j
-mvn clean package
+mvn clean package -DskipTests
 ```
 
 构建完成后，Fat JAR 位于 `target/codegraph4j-1.0-SNAPSHOT.jar`。

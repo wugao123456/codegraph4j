@@ -1,41 +1,43 @@
 <configuration>
-    <!-- 控制台输出 -->
+    <!-- 控制台输出（serve mcp 模式下会被 redirectLogsToFile 移除） -->
     <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <!-- 更清晰的日志格式 -->
             <pattern>%d{HH:mm:ss.SSS} [%thread] %highlight(%-5level) %cyan(%logger{36}) - %msg%n</pattern>
         </encoder>
     </appender>
     
-    <!-- 文件输出 (可选) -->
-    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>logs/codegraph.log</file>
-        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-            <fileNamePattern>logs/codegraph-%d{yyyy-MM-dd}.log</fileNamePattern>
-            <maxHistory>7</maxHistory>
-        </rollingPolicy>
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
-    </appender>
+    <!--
+        注意：不做静态文件 appender 配置！
+        原因：logback.xml 是静态配置，如果使用相对路径（如 .codegraph/logs/），
+        文件会相对于 Java 进程的 CWD 创建。Trae 等 AI 助手启动 MCP 时 CWD 可能在
+        任意位置，导致日志落到错误目录。
+        
+        文件日志由 ServeCommand.redirectLogsToFile() 动态配置，
+        使用 projectPath/.codegraph/logs/codegraph4j-mcp.log 的绝对路径。
+    -->
     
-    <!-- CodeGraph 核心模块 - INFO 级别显示主要流程 -->
-    <logger name="com.codegraph" level="INFO" additivity="false">
+    <!-- MCP 层日志 -->
+    <logger name="com.codegraph.mcp" level="INFO" additivity="false">
         <appender-ref ref="STDOUT"/>
     </logger>
     
-    <!-- 解析器模块 - DEBUG 级别显示解析详情 -->
-    <logger name="com.codegraph.parser" level="DEBUG" additivity="false">
-        <appender-ref ref="STDOUT"/>
-    </logger>
-    
-    <!-- 数据库模块 - INFO 级别 -->
+    <!-- 数据库模块 -->
     <logger name="com.codegraph.db" level="INFO" additivity="false">
         <appender-ref ref="STDOUT"/>
     </logger>
     
-    <!-- CLI 模块 - INFO 级别 -->
+    <!-- 解析器模块 -->
+    <logger name="com.codegraph.parser" level="DEBUG" additivity="false">
+        <appender-ref ref="STDOUT"/>
+    </logger>
+    
+    <!-- CLI 模块 -->
     <logger name="com.codegraph.cli" level="INFO" additivity="false">
+        <appender-ref ref="STDOUT"/>
+    </logger>
+    
+    <!-- 其他 codegraph 模块 -->
+    <logger name="com.codegraph" level="INFO" additivity="false">
         <appender-ref ref="STDOUT"/>
     </logger>
     
