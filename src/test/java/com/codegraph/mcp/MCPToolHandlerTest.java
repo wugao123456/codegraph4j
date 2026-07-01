@@ -36,7 +36,7 @@ public class MCPToolHandlerTest {
         MCPToolHandler toolHandler = new MCPToolHandler(
                 projectPath, db, queries);
         Map<String, Object> args1 = new HashMap<>();
-        args1.put("query", "exploreTool");
+        args1.put("query", "IndexCommand codegraph_explore 索引流程的完整调用链和核心步骤");
         ToolCallResult result = toolHandler.execute("codegraph_explore", args1);
 
         System.out.println(result);

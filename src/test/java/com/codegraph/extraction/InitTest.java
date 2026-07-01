@@ -23,4 +23,15 @@ public class InitTest {
     }
        
 }
-    
+/**
+     SELECT 
+    e.id, e.kind,
+    e.source, src.name AS source_name,
+    e.target, tgt.name AS target_name
+FROM edges e
+LEFT JOIN nodes src ON e.source = src.id
+LEFT JOIN nodes tgt ON e.target = tgt.id
+WHERE e.kind = 'CALLS'
+ORDER BY e.id
+LIMIT 100
+ */

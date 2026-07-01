@@ -1,9 +1,10 @@
-package com.codegraph.install;
+package com.codegraph.installer;
 
-import com.codegraph.install.target.*;
 import picocli.CommandLine;
 
 import java.util.*;
+
+import com.codegraph.installer.target.*;
 
 /**
  * uninstall   —   CodeGraph MCP     AI      。

@@ -1,10 +1,11 @@
-package com.codegraph.install;
+package com.codegraph.installer;
 
-import com.codegraph.install.target.*;
 import picocli.CommandLine;
 
 import java.nio.file.*;
 import java.util.*;
+
+import com.codegraph.installer.target.*;
 
 /**
  * install   —   CodeGraph MCP        AI    。

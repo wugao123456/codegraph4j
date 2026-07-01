@@ -1,10 +1,11 @@
 package com.codegraph.install;
 
-import com.codegraph.install.target.*;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
+
+import com.codegraph.installer.target.*;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
