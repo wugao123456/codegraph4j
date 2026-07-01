@@ -107,11 +107,31 @@ public class TreeSitterExtractor {
 
         // 4. 遍历 AST
         ExtractorContext ctx = new ExtractorContext(filePathStr, source, ts);
+
+        // 创建文件节点并推入作用域栈（后续所有顶层节点会自动建立 file→节点的 CONTAINS 边）
+        String fileNodeId = TreeSitterHelpers.generateNodeId(filePathStr, "file", filePathStr, 1);
+        com.codegraph.core.Node fileNode = new com.codegraph.core.Node();
+        fileNode.setId(fileNodeId);
+        fileNode.setKind(NodeKind.FILE);
+        fileNode.setName(filePathStr);
+        fileNode.setQualifiedName(filePathStr);
+        fileNode.setFilePath(filePathStr);
+        fileNode.setLanguage(com.codegraph.core.types.Language.JAVA);
+        fileNode.setStartLine(1);
+        fileNode.setStartColumn(1);
+        fileNode.setEndLine(1);
+        fileNode.setEndColumn(1);
+        fileNode.setUpdatedAt(System.currentTimeMillis());
+        ctx.getNodes().add(fileNode);
+        ctx.pushScope(filePathStr, fileNodeId);
+
         try {
             visitNode(rootNode, ctx, extractor);
         } catch (Exception e) {
             logger.error("[extract] Error during AST traversal for {}: {}", filePathStr, e.getMessage(), e);
         }
+
+        ctx.popScope();
 
         // 4.1 解析方法调用引用，生成 CALLS 边（启发式）
         resolvePendingReferences(ctx);
@@ -122,6 +142,8 @@ public class TreeSitterExtractor {
         logger.trace("[extract] parser & tree cleaned up");
 
         ParseResult result = new ParseResult(ctx.getNodes(), ctx.getEdges());
+        // 将无法在当前文件内解析的引用移到 ParseResult，供 SyncOrchestrator 写入 unresolved_refs
+        result.getUnresolvedRefs().addAll(ctx.getUnresolvedRefs());
         long elapsed = System.currentTimeMillis() - startTime;
 
         // 按类型统计
@@ -582,9 +604,11 @@ public class TreeSitterExtractor {
             logger.debug("[extends] extractSimpleTypeName → '{}'", superName);
             if (superName != null && !superName.isEmpty()) {
                 String superId = buildExternalNodeId(ctx.getFilePath(), "CLASS", superName);
+                Map<String, Object> extendsMeta = new HashMap<>();
+                extendsMeta.put("provenance", "tree-sitter");
                 ctx.addEdge(classEntity.getId(), superId, EdgeKind.EXTENDS,
                     ts.ts_node_start_point(superclass).row + 1,
-                    ts.ts_node_start_point(superclass).column + 1);
+                    ts.ts_node_start_point(superclass).column + 1, null, extendsMeta);
                 logger.debug("[extends] {} extends {} → edge source={} target={}",
                     classEntity.getName(), superName, classEntity.getId(), superId);
             } else {
@@ -637,9 +661,11 @@ public class TreeSitterExtractor {
         if (ifaceName != null && !ifaceName.isEmpty()) {
             TreeSitterNative ts = ctx.getTreeSitter();
             String ifaceId = buildExternalNodeId(ctx.getFilePath(), "INTERFACE", ifaceName);
+            Map<String, Object> implMeta = new HashMap<>();
+            implMeta.put("provenance", "tree-sitter");
             ctx.addEdge(classEntity.getId(), ifaceId, EdgeKind.IMPLEMENTS,
                 ts.ts_node_start_point(node).row + 1,
-                ts.ts_node_start_point(node).column + 1);
+                ts.ts_node_start_point(node).column + 1, null, implMeta);
             logger.debug("[implements] {} implements {} → edge source={} target={}",
                 classEntity.getName(), ifaceName, classEntity.getId(), ifaceId);
         }
@@ -916,11 +942,17 @@ public class TreeSitterExtractor {
 
             String calleeId = resolveCalleeId(ref, methods, methodNameIndex, ctx);
             if (calleeId != null) {
-                ctx.addEdge(ref.callerId, calleeId, EdgeKind.CALLS, ref.line, ref.column, "heuristic");
+                Map<String, Object> metadata = new HashMap<>();
+                metadata.put("provenance", "heuristic");
+                ctx.addEdge(ref.callerId, calleeId, EdgeKind.CALLS, ref.line, ref.column, "heuristic", metadata);
                 callsEdgesAdded++;
                 logger.debug("[calls]   ✓ 解析成功: caller={} → callee={} [heuristic]",
                     ref.callerId, calleeId);
             } else {
+                // 无法在当前文件内解析，记录为 UnresolvedRef 供后续 resolution 阶段处理
+                ctx.getUnresolvedRefs().add(new com.codegraph.resolution.frameworks.UnresolvedRef(
+                    ref.callerId, ref.calleeName, "calls",
+                    ctx.getFilePath(), ref.line, ref.column));
                 logger.debug("[calls]   ✗ 无法解析: {} → {} at {}:{}",
                     ref.callerId, ref.calleeName, ref.line, ref.column);
             }
@@ -939,7 +971,9 @@ public class TreeSitterExtractor {
                 logger.debug("[calls]   查找父类方法 qualifiedName: {}", parentMethodQName);
                 String calleeId = findMethodByQualifiedName(parentMethodQName, methods);
                 if (calleeId != null) {
-                    ctx.addEdge(ref.callerId, calleeId, EdgeKind.CALLS, ref.line, ref.column, "heuristic");
+                    Map<String, Object> metadata = new HashMap<>();
+                    metadata.put("provenance", "heuristic");
+                    ctx.addEdge(ref.callerId, calleeId, EdgeKind.CALLS, ref.line, ref.column, "heuristic", metadata);
                     callsEdgesAdded++;
                     logger.debug("[calls]   ✓ SUPER 调用解析成功: {} → {} [heuristic]",
                         ref.callerId, calleeId);

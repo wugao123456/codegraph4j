@@ -6,6 +6,7 @@ import com.codegraph.core.types.*;
 import com.codegraph.extraction.bridge.TSNode;
 import com.codegraph.extraction.bridge.TSPoint;
 import com.codegraph.extraction.bridge.TreeSitterNative;
+import com.codegraph.resolution.frameworks.UnresolvedRef;
 
 import java.util.*;
 
@@ -40,6 +41,8 @@ public class ExtractorContext {
     private final List<CallReference> callReferences = new ArrayList<>();
     /** 待解析的父类方法调用引用（super.xxx） */
     private final List<CallReference> superCallReferences = new ArrayList<>();
+    /** 无法在当前文件内解析的引用，供后续 resolution 阶段处理 */
+    private final List<UnresolvedRef> unresolvedRefs = new ArrayList<>();
 
     public ExtractorContext(String filePath, String source, TreeSitterNative ts) {
         this.filePath = filePath;
@@ -142,7 +145,7 @@ public class ExtractorContext {
         TSPoint endPoint = ts.ts_node_end_point(tsNode);
 
         String qualifiedName = buildQualifiedName(name);
-        String nodeId = TreeSitterHelpers.generateNodeId(filePath, kind.name(), qualifiedName, startPoint.row + 1);
+        String nodeId = TreeSitterHelpers.generateNodeId(filePath, kind.name(), name, startPoint.row + 1);
 
         node.setId(nodeId);
         node.setKind(kind);
@@ -212,13 +215,21 @@ public class ExtractorContext {
      * 添加关系边。
      */
     public void addEdge(String sourceId, String targetId, EdgeKind kind, int line, int column) {
-        addEdge(sourceId, targetId, kind, line, column, null);
+        addEdge(sourceId, targetId, kind, line, column, null, null);
     }
 
     /**
      * 添加关系边（带 provenance）。
      */
     public void addEdge(String sourceId, String targetId, EdgeKind kind, int line, int column, String provenance) {
+        addEdge(sourceId, targetId, kind, line, column, provenance, null);
+    }
+
+    /**
+     * 添加关系边（带 provenance 和 metadata）。
+     */
+    public void addEdge(String sourceId, String targetId, EdgeKind kind, int line, int column,
+                        String provenance, Map<String, Object> metadata) {
         Edge edge = new Edge();
         edge.setSource(sourceId);
         edge.setTarget(targetId);
@@ -226,6 +237,7 @@ public class ExtractorContext {
         edge.setLine(line);
         edge.setColumn(column);
         edge.setProvenance(provenance);
+        edge.setMetadata(metadata);
         edges.add(edge);
     }
 
@@ -354,6 +366,10 @@ public class ExtractorContext {
 
     public List<CallReference> getSuperCallReferences() {
         return superCallReferences;
+    }
+
+    public List<UnresolvedRef> getUnresolvedRefs() {
+        return unresolvedRefs;
     }
 
     // =========================================================================

@@ -22,10 +22,7 @@ public class GraphRelevanceComputer {
     /** 参与相关性计算的边类型 */
     private static final Set<String> RANK_EDGES = new HashSet<>(Arrays.asList(
         "calls", "references", "extends", "implements", "overrides",
-        "instantiates", "returns", "type_of", "imports",
-        // Java 版本用 EdgeKind 枚举
-        "CALLS", "REFERENCES", "EXTENDS", "IMPLEMENTS", "OVERRIDES",
-        "INSTANTIATES", "RETURNS", "TYPE_OF", "IMPORTS"
+        "instantiates", "returns", "type_of", "imports"
     ));
 
     private static final double ALPHA = 0.25;
@@ -56,7 +53,7 @@ public class GraphRelevanceComputer {
         List<Integer>[] adj = new List[n];
         for (int i = 0; i < n; i++) adj[i] = new ArrayList<>();
         for (Edge e : edges) {
-            if (!RANK_EDGES.contains(e.getKind().name())) continue;
+            if (!RANK_EDGES.contains(e.getKind().getValue())) continue;
             Integer i = idx.get(e.getSource());
             Integer j = idx.get(e.getTarget());
             if (i == null || j == null || i == j) continue;

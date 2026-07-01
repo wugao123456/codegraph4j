@@ -24,8 +24,10 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -169,6 +171,11 @@ public class SyncOrchestrator {
                         }
                     }
 
+                    // 保存未解析引用（供 resolution 阶段处理）
+                    if (!parseResult.getUnresolvedRefs().isEmpty()) {
+                        queryBuilder.insertUnresolvedRefs(parseResult.getUnresolvedRefs());
+                    }
+
                     // 更新文件记录
                     FileRecord fileRecord = new FileRecord();
                     fileRecord.setFilePath(filePathStr);
@@ -205,8 +212,26 @@ public class SyncOrchestrator {
             runFrameworkExtraction(projectRoot, queryBuilder, currentFiles, result);
         }
 
+        // 7. Resolution 阶段：解析跨文件引用
+        runResolution(projectRoot, queryBuilder);
+
         result.setDurationMs(System.currentTimeMillis() - startTime);
         return result;
+    }
+
+    /**
+     * 执行引用解析阶段。
+     */
+    private void runResolution(Path projectRoot, QueryBuilder queryBuilder) {
+        try {
+            com.codegraph.resolution.ReferenceResolver resolver =
+                    new com.codegraph.resolution.ReferenceResolver(queryBuilder, projectRoot.toString());
+            resolver.initialize();
+            resolver.runPostExtract();
+            resolver.resolveUnresolvedRefs();
+        } catch (Exception e) {
+            logger.error("Resolution 阶段失败: {}", e.getMessage());
+        }
     }
 
     /**
@@ -264,6 +289,9 @@ public class SyncOrchestrator {
                                 edge.setLine(ref.getLine());
                                 edge.setColumn(ref.getColumn());
                                 edge.setProvenance("framework:" + fw.getName());
+                                Map<String, Object> fwMeta = new HashMap<>();
+                                fwMeta.put("provenance", "framework:" + fw.getName());
+                                edge.setMetadata(fwMeta);
                                 try {
                                     queryBuilder.insertEdge(edge);
                                 } catch (SQLException e) {

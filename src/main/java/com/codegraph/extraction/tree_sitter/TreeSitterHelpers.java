@@ -30,8 +30,8 @@ public final class TreeSitterHelpers {
     // =========================================================================
 
     /**
-     * 生成节点 ID（SHA-256 hash, 32 字符 hex）。
-     * 格式: sha256(filePath:kind:name:line)
+     * 生成节点 ID（SHA-256 hash, 前 32 字符 hex）。
+     * 格式: kind:sha256(filePath:kind:name:line).substring(0,32)
      */
     public static String generateNodeId(String filePath, String kind, String name, int line) {
         String input = filePath + ":" + kind + ":" + name + ":" + line;
@@ -39,8 +39,8 @@ public final class TreeSitterHelpers {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] hash = md.digest(input.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();
-            for (byte b : hash) {
-                sb.append(String.format("%02x", b));
+            for (int i = 0; i < 16; i++) {  // 16 bytes = 32 hex chars
+                sb.append(String.format("%02x", hash[i]));
             }
             return kind + ":" + sb.toString();
         } catch (NoSuchAlgorithmException e) {

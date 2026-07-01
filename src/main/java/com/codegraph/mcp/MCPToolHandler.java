@@ -149,7 +149,6 @@ public class MCPToolHandler {
             "Symbol search by name. Returns locations (no source code).",
             schema);
     }
-
     private ToolCallResult handleSearch(Map<String, Object> args) throws SQLException {
         String query = requireArg(args, "query");
         String kind = strArg(args, "kind", null);
@@ -664,7 +663,7 @@ public class MCPToolHandler {
                     Node src = subgraph.nodes.get(e.getSource());
                     Node tgt = subgraph.nodes.get(e.getTarget());
                     if (src == null || tgt == null) continue;
-                    byKind.computeIfAbsent(e.getKind().name(), k -> new ArrayList<>())
+                    byKind.computeIfAbsent(e.getKind().getValue(), k -> new ArrayList<>())
                           .add(new String[]{src.getName(), tgt.getName()});
                 }
                 for (Map.Entry<String, List<String[]>> ke : byKind.entrySet()) {
@@ -1278,7 +1277,7 @@ public class MCPToolHandler {
         // 按类型统计边
         Map<String, Integer> edgeKindCounts = new LinkedHashMap<>();
         for (com.codegraph.core.Edge e : queries.getAllEdges()) {
-            edgeKindCounts.merge(e.getKind().name(), 1, Integer::sum);
+            edgeKindCounts.merge(e.getKind().getValue(), 1, Integer::sum);
         }
 
         StringBuilder sb = new StringBuilder();

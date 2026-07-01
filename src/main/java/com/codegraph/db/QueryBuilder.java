@@ -7,6 +7,7 @@ import com.codegraph.core.types.EdgeKind;
 import com.codegraph.core.types.Language;
 import com.codegraph.core.types.NodeKind;
 import com.codegraph.core.types.Visibility;
+import com.codegraph.resolution.frameworks.UnresolvedRef;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -78,7 +79,7 @@ public class QueryBuilder {
         try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
             stmt.setString(1, edge.getSource());
             stmt.setString(2, edge.getTarget());
-            stmt.setString(3, edge.getKind().name());
+            stmt.setString(3, edge.getKind().getValue());
             stmt.setString(4, serializeObject(edge.getMetadata()));
             stmt.setInt(5, edge.getLine());
             stmt.setInt(6, edge.getColumn());
@@ -427,7 +428,7 @@ public class QueryBuilder {
             stmt.setString(1, nodeId);
             if (kinds != null) {
                 for (int i = 0; i < kinds.length; i++) {
-                    stmt.setString(i + 2, kinds[i].name());
+                    stmt.setString(i + 2, kinds[i].getValue());
                 }
             }
             ResultSet rs = stmt.executeQuery();
@@ -458,7 +459,7 @@ public class QueryBuilder {
             stmt.setString(1, nodeId);
             if (kinds != null) {
                 for (int i = 0; i < kinds.length; i++) {
-                    stmt.setString(i + 2, kinds[i].name());
+                    stmt.setString(i + 2, kinds[i].getValue());
                 }
             }
             ResultSet rs = stmt.executeQuery();
@@ -551,7 +552,7 @@ public class QueryBuilder {
         Edge edge = new Edge();
         edge.setSource(rs.getString("source"));
         edge.setTarget(rs.getString("target"));
-        edge.setKind(EdgeKind.valueOf(rs.getString("kind")));
+        edge.setKind(EdgeKind.fromValue(rs.getString("kind")));
         edge.setMetadata((Map<String, Object>) deserializeObject(rs.getString("metadata")));
         edge.setLine(rs.getInt("line"));
         edge.setColumn(rs.getInt("col"));
@@ -607,5 +608,81 @@ public class QueryBuilder {
             logger.warn("Failed to deserialize object: {}", e.getMessage());
             return null;
         }
+    }
+
+    // =========================================================================
+    // unresolved_refs CRUD
+    // =========================================================================
+
+    /**
+     * 批量插入未解析引用。
+     */
+    public void insertUnresolvedRefs(List<UnresolvedRef> refs) throws SQLException {
+        String sql = "INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, " +
+                "line, col, file_path, language) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            for (UnresolvedRef ref : refs) {
+                stmt.setString(1, ref.getFromNodeId());
+                stmt.setString(2, ref.getReferenceName());
+                stmt.setString(3, ref.getReferenceKind());
+                stmt.setInt(4, ref.getLine());
+                stmt.setInt(5, ref.getColumn());
+                stmt.setString(6, ref.getFilePath() != null ? ref.getFilePath() : "");
+                stmt.setString(7, "java");
+                stmt.addBatch();
+            }
+            stmt.executeBatch();
+        }
+    }
+
+    /**
+     * 分页读取未解析引用。
+     */
+    public List<UnresolvedRef> getUnresolvedRefsBatch(int offset, int limit) throws SQLException {
+        List<UnresolvedRef> refs = new ArrayList<>();
+        String sql = "SELECT id, from_node_id, reference_name, reference_kind, line, col, file_path " +
+                "FROM unresolved_refs ORDER BY id LIMIT ? OFFSET ?";
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            stmt.setInt(1, limit);
+            stmt.setInt(2, offset);
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                UnresolvedRef ref = new UnresolvedRef();
+                // We store id via a transient field or handle separately
+                ref.setFromNodeId(rs.getString("from_node_id"));
+                ref.setReferenceName(rs.getString("reference_name"));
+                ref.setReferenceKind(rs.getString("reference_kind"));
+                ref.setLine(rs.getInt("line"));
+                ref.setColumn(rs.getInt("col"));
+                ref.setFilePath(rs.getString("file_path"));
+                refs.add(ref);
+            }
+        }
+        return refs;
+    }
+
+    /**
+     * 删除已解析的未解析引用（按 id）。
+     */
+    public void deleteResolvedRefs(int maxId) throws SQLException {
+        String sql = "DELETE FROM unresolved_refs WHERE id <= ?";
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            stmt.setInt(1, maxId);
+            stmt.executeUpdate();
+        }
+    }
+
+    /**
+     * 获取未解析引用的总数。
+     */
+    public int countUnresolvedRefs() throws SQLException {
+        String sql = "SELECT COUNT(*) FROM unresolved_refs";
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                return rs.getInt(1);
+            }
+        }
+        return 0;
     }
 }
