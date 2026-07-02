@@ -249,13 +249,6 @@ java -jar codegraph4j.jar serve --mcp -p <project-path>
 | `-p, --project` | 项目根目录（默认当前目录） |
 | `--mcp` | 以 MCP 模式运行（stdio JSON-RPC 2.0 传输） |
 
-### traverse — 图遍历
-
-探索代码图中节点的调用关系、影响范围等。
-
-```bash
-java -jar codegraph4j.jar traverse -p <project-path> [options]
-```
 
 | 选项 | 说明 |
 |------|------|
@@ -270,15 +263,7 @@ java -jar codegraph4j.jar traverse -p <project-path> [options]
 | `--impact` | 影响范围分析模式 |
 
 ```bash
-# BFS 遍历
-java -jar codegraph4j.jar traverse --search "UserService" -d 2
 
-# 查找谁调用了 login 方法
-java -jar codegraph4j.jar traverse --search "login" --callers
-
-# 分析 authenticate 方法的影响范围
-java -jar codegraph4j.jar traverse --search "authenticate" --impact
-```
 
 ---
 

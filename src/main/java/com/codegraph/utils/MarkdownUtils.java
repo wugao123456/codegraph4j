@@ -91,7 +91,7 @@ public class MarkdownUtils {
         
         String markdown = resultToMarkdown(result, toolName, arguments);
         try {
-            Path path = Paths.get(projectPath,"explore_"+ arguments+".md");
+            Path path = Paths.get(projectPath,".codegraph/logs/explore_"+ arguments+".md");
             Files.write(path, markdown.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             System.err.println("Failed to write markdown file: " + e.getMessage());
