@@ -21,9 +21,7 @@ public class BlastRadiusBuilder {
     private static final int FILE_CAP = 4;   // 每个符号最多列出 4 个调用文件
     private static final Set<String> MEANINGFUL_KINDS = new HashSet<>(Arrays.asList(
         "function", "method", "class", "interface", "struct", "trait", "protocol",
-        "enum", "type_alias", "component", "constant", "variable", "property", "field",
-        "FUNCTION", "METHOD", "CLASS", "INTERFACE", "STRUCT", "TRAIT", "PROTOCOL",
-        "ENUM", "TYPE_ALIAS", "COMPONENT", "CONSTANT", "VARIABLE", "PROPERTY", "FIELD"
+        "enum", "type_alias", "component", "constant", "variable", "property", "field"
     ));
 
     /**
@@ -40,7 +38,7 @@ public class BlastRadiusBuilder {
         List<Node> roots = new ArrayList<>();
         for (String rootId : subgraph.roots) {
             Node n = subgraph.nodes.get(rootId);
-            if (n != null && MEANINGFUL_KINDS.contains(n.getKind().name())) {
+            if (n != null && MEANINGFUL_KINDS.contains(n.getKind().getValue())) {
                 roots.add(n);
                 if (roots.size() >= ROOT_CAP) break;
             }

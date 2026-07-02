@@ -29,6 +29,8 @@ public class ExtractorContext {
     private final Deque<String> scopeStack;  // 类名栈，用于构建 qualifiedName
     private final Deque<String> parentIdStack; // 父节点 ID 栈，用于 CONTAINS 边
     private String packageName;
+    /** MODULE 节点 ID，用于创建 imports 边 */
+    private String moduleNodeId;
 
     // ===== 调用引用跟踪（启发式 CALLS 边生成） =====
     /** 当前方法上下文（ID） */
@@ -43,6 +45,8 @@ public class ExtractorContext {
     private final List<CallReference> superCallReferences = new ArrayList<>();
     /** 无法在当前文件内解析的引用，供后续 resolution 阶段处理 */
     private final List<UnresolvedRef> unresolvedRefs = new ArrayList<>();
+    /** 方法体内的标识符引用，用于生成 references 边 */
+    private final List<IdentifierRef> identifierRefs = new ArrayList<>();
 
     public ExtractorContext(String filePath, String source, TreeSitterNative ts) {
         this.filePath = filePath;
@@ -183,8 +187,9 @@ public class ExtractorContext {
 
     /**
      * 创建包/导入节点（不生成 CONTAINS 边）。
+     * @return 创建的节点 ID
      */
-    public void addPackageOrImportNode(NodeKind kind, String name, TSNode tsNode) {
+    public String addPackageOrImportNode(NodeKind kind, String name, TSNode tsNode) {
         Node node = new Node();
         TSPoint startPoint = ts.ts_node_start_point(tsNode);
         TSPoint endPoint = ts.ts_node_end_point(tsNode);
@@ -205,6 +210,7 @@ public class ExtractorContext {
         node.setUpdatedAt(System.currentTimeMillis());
 
         nodes.add(node);
+        return nodeId;
     }
 
     // =========================================================================
@@ -257,6 +263,20 @@ public class ExtractorContext {
      */
     public String getPackageName() {
         return packageName;
+    }
+
+    /**
+     * 设置 MODULE 节点 ID（用于生成 imports 边）。
+     */
+    public void setModuleNodeId(String moduleNodeId) {
+        this.moduleNodeId = moduleNodeId;
+    }
+
+    /**
+     * 获取 MODULE 节点 ID。
+     */
+    public String getModuleNodeId() {
+        return moduleNodeId;
     }
 
     /**
@@ -396,5 +416,35 @@ public class ExtractorContext {
             this.column = column;
             this.isChained = isChained;
         }
+    }
+
+    /**
+     * 标识符引用记录 — 在 AST 遍历时收集方法体内的标识符，
+     * 遍历后匹配 FIELD/ENUM_MEMBER/CONSTANT 节点生成 references 边。
+     */
+    public static class IdentifierRef {
+        public final String methodId;
+        public final String identifierName;
+        public final int line;
+        public final int column;
+
+        public IdentifierRef(String methodId, String identifierName, int line, int column) {
+            this.methodId = methodId;
+            this.identifierName = identifierName;
+            this.line = line;
+            this.column = column;
+        }
+    }
+
+    /**
+     * 记录方法体内的标识符引用（用于 references 边生成）。
+     */
+    public void addIdentifierRef(String identifierName, int line, int column) {
+        if (currentMethodId == null || identifierName == null || identifierName.isEmpty()) return;
+        identifierRefs.add(new IdentifierRef(currentMethodId, identifierName, line, column));
+    }
+
+    public List<IdentifierRef> getIdentifierRefs() {
+        return identifierRefs;
     }
 }

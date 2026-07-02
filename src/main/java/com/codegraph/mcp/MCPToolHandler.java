@@ -12,6 +12,8 @@ import com.codegraph.graph.GraphTraverser;
 import com.codegraph.graph.GraphTraverser.*;
 import com.codegraph.mcp.MCPTransport.*;
 import com.codegraph.resolution.frameworks.FrameworkRegistry;
+import com.codegraph.utils.MarkdownUtils;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -161,7 +163,7 @@ public class MCPToolHandler {
         if (kind != null && !kind.isEmpty()) {
             try {
                 com.codegraph.core.types.NodeKind nodeKind =
-                    com.codegraph.core.types.NodeKind.valueOf(kind.toUpperCase());
+                    com.codegraph.core.types.NodeKind.fromValue(kind.toLowerCase());
                 results = new ArrayList<>();
                 for (Node n : searchResults) {
                     if (n.getKind() == nodeKind) results.add(n);
@@ -180,7 +182,7 @@ public class MCPToolHandler {
         for (int i = 0; i < results.size(); i++) {
             Node n = results.get(i);
             sb.append(String.format("%d. %s %s [%s] %s:%d\n",
-                i + 1, n.getKind().name(), n.getName(),
+                i + 1, n.getKind().getValue(), n.getName(),
                 truncate(n.getId(), 12), n.getFilePath(), n.getStartLine()));
         }
         return text(sb.toString());
@@ -216,13 +218,13 @@ public class MCPToolHandler {
 
         StringBuilder sb = new StringBuilder();
         sb.append("Callers of ").append(node.getName())
-            .append(" (").append(node.getKind().name()).append("):\n\n");
+            .append(" (").append(node.getKind().getValue()).append("):\n\n");
         if (callers.isEmpty()) {
             sb.append("No callers found.\n");
         } else {
             for (CallerInfo c : callers) {
                 sb.append(String.format("- %s %s [%s] %s:%d\n",
-                    c.node.getKind().name(), c.node.getName(),
+                    c.node.getKind().getValue(), c.node.getName(),
                     truncate(c.node.getId(), 12),
                     c.node.getFilePath(), c.node.getStartLine()));
             }
@@ -259,13 +261,13 @@ public class MCPToolHandler {
 
         StringBuilder sb = new StringBuilder();
         sb.append("Callees of ").append(node.getName())
-            .append(" (").append(node.getKind().name()).append("):\n\n");
+            .append(" (").append(node.getKind().getValue()).append("):\n\n");
         if (callees.isEmpty()) {
             sb.append("No callees found.\n");
         } else {
             for (CalleeInfo c : callees) {
                 sb.append(String.format("- %s %s [%s] %s:%d\n",
-                    c.node.getKind().name(), c.node.getName(),
+                    c.node.getKind().getValue(), c.node.getName(),
                     truncate(c.node.getId(), 12),
                     c.node.getFilePath(), c.node.getStartLine()));
             }
@@ -313,7 +315,7 @@ public class MCPToolHandler {
             sb.append("\n  ").append(entry.getKey()).append("\n");
             for (Node n : entry.getValue()) {
                 sb.append(String.format("    %s %s (line %d)\n",
-                    n.getKind().name(), n.getName(), n.getStartLine()));
+                    n.getKind().getValue(), n.getName(), n.getStartLine()));
             }
         }
         return text(sb.toString());
@@ -348,7 +350,7 @@ public class MCPToolHandler {
             sb.append("Symbols in ").append(file).append(":\n\n");
             for (Node n : fileNodes) {
                 sb.append(String.format("  %s %s (line %d)\n",
-                    n.getKind().name(), n.getName(), n.getStartLine()));
+                    n.getKind().getValue(), n.getName(), n.getStartLine()));
             }
             sb.append("\nTotal: ").append(fileNodes.size()).append(" symbols\n");
             return text(sb.toString());
@@ -363,7 +365,7 @@ public class MCPToolHandler {
         StringBuilder sb = new StringBuilder();
         sb.append("=== Symbol Details ===\n\n");
         sb.append("Name:        ").append(node.getName()).append("\n");
-        sb.append("Kind:        ").append(node.getKind().name()).append("\n");
+        sb.append("Kind:        ").append(node.getKind().getValue()).append("\n");
         sb.append("QName:       ").append(node.getQualifiedName()).append("\n");
         sb.append("File:        ").append(node.getFilePath()).append("\n");
         sb.append("Location:    line ").append(node.getStartLine())
@@ -734,7 +736,7 @@ public class MCPToolHandler {
             // 检测神主文件（spine + 内容过大）
             int namedBodyChars = 0;
             for (Node n : group.nodes) {
-                if (isCallable(n.getKind().name()) && (pathNodeIds.contains(n.getId()) || namedNodeIds.contains(n.getId()))) {
+                if (isCallable(n.getKind().getValue()) && (pathNodeIds.contains(n.getId()) || namedNodeIds.contains(n.getId()))) {
                     if (n.getStartLine() > 0 && n.getEndLine() > n.getStartLine()) {
                         namedBodyChars += String.join("\n", fileLines.subList(
                             Math.max(0, n.getStartLine() - 1), Math.min(fileLines.size(), n.getEndLine()))).length();
@@ -742,7 +744,7 @@ public class MCPToolHandler {
                 }
             }
             boolean onSpineGodFile = hasSpineNode && namedBodyChars > budget.maxCharsPerFile
-                && group.nodes.stream().anyMatch(n -> isCallable(n.getKind().name()) && uniqueNamedIds.contains(n.getId()) && !pathNodeIds.contains(n.getId()));
+                && group.nodes.stream().anyMatch(n -> isCallable(n.getKind().getValue()) && uniqueNamedIds.contains(n.getId()) && !pathNodeIds.contains(n.getId()));
 
             if ((onSpineGodFile || (!hasSpineNode && isPolySib && !spared))) {
                 // 骨架化渲染
@@ -810,73 +812,15 @@ public class MCPToolHandler {
         if (budget.includeBudgetNote) {
             lines.add("*Explore output budget: " + totalChars + "/" + budget.maxOutputChars + " chars, " + filesIncluded + "/" + maxFiles + " files.*");
         }
-
         String resultText = joinStrings(lines);
-        writeExploreLog(query, resultText);
-        
         long elapsed = System.currentTimeMillis() - startTime;
         logger.info("[codegraph_explore] 处理完成: query=\"{}\", 输出字符数={}, 文件数={}, 耗时={}ms", 
             query, resultText.length(), filesIncluded, elapsed);
-        
-        return text(resultText);
+        ToolCallResult  result= text(resultText);
+        MarkdownUtils.writeMarkdownToFile(result, "codegraph_explore", query, projectPath);
+        return result;
     }
 
-    // ============ handleExplore 辅助方法 ============
-
-    private void writeExploreLog(String query, String content) {
-        try {
-            Path logsDir = Paths.get(projectPath, ".codegraph", "logs");
-            if (!Files.exists(logsDir)) {
-                Files.createDirectories(logsDir);
-            }
-
-            String timestamp = LocalDateTime.now().format(EXPLORE_LOG_DATE_FORMATTER);
-            String safeQuery = query.replaceAll("[^a-zA-Z0-9_\\-]", "_")
-                .substring(0, Math.min(query.length(), 50));
-            String fileName = "explore_" + timestamp + "_" + safeQuery + ".md";
-            Path logFile = logsDir.resolve(fileName);
-
-            StringBuilder sb = new StringBuilder();
-            sb.append("# CodeGraph Explore Result\n\n");
-            sb.append("## Metadata\n\n");
-            sb.append("| Field | Value |\n");
-            sb.append("|-------|-------|\n");
-            sb.append("| **Tool** | codegraph_explore |\n");
-            sb.append("| **Query** | ").append(escape(query)).append(" |\n");
-            sb.append("| **Timestamp** | ").append(LocalDateTime.now().format(
-                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append(" |\n");
-            sb.append("\n");
-            sb.append("## Content\n\n");
-            sb.append(content);
-
-            Files.write(logFile, sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-
-            rotateExploreLogs(logsDir);
-        } catch (IOException e) {
-            logger.warn("Failed to write explore log: {}", e.getMessage());
-        }
-    }
-
-    private static void rotateExploreLogs(Path logsDir) {
-        try (Stream<Path> stream = Files.list(logsDir)) {
-            List<Path> logFiles = stream
-                .filter(p -> p.getFileName().toString().startsWith("explore_"))
-                .filter(Files::isRegularFile)
-                .sorted(Comparator.comparing(p -> p.getFileName().toString()))
-                .collect(Collectors.toList());
-
-            while (logFiles.size() > EXPLORE_LOG_MAX_FILES) {
-                Path oldest = logFiles.remove(0);
-                try {
-                    Files.delete(oldest);
-                } catch (IOException e) {
-                    logger.warn("Failed to delete old explore log: {}", oldest);
-                }
-            }
-        } catch (IOException e) {
-            logger.warn("Failed to rotate explore logs: {}", e.getMessage());
-        }
-    }
 
     private static int clamp(int val, int lo, int hi) {
         return Math.max(lo, Math.min(hi, val));
@@ -1054,7 +998,7 @@ public class MCPToolHandler {
 
     private boolean definesPolymorphicSupertype(List<Node> nodes, QueryBuilder q, Map<String, Boolean> cache, int minSiblings) {
         for (Node n : nodes) {
-            String kn = n.getKind().name().toLowerCase();
+            String kn = n.getKind().getValue();
             if (!kn.equals("class") && !kn.equals("interface") && !kn.equals("struct")
                 && !kn.equals("trait") && !kn.equals("protocol") && !kn.equals("type_alias")
                 && !kn.equals("enum")) continue;
@@ -1091,11 +1035,10 @@ public class MCPToolHandler {
         int bodyCap = (int)(budget.maxCharsPerFile * 1.5);
 
         final Set<String> CALLABLE_KINDS = new HashSet<>(Arrays.asList(
-            "method", "function", "component", "constructor", "property",
-            "METHOD", "FUNCTION", "COMPONENT", "CONSTRUCTOR", "PROPERTY"));
+            "method", "function", "component", "constructor", "property"));
 
         for (Node n : syms) {
-            String kn = n.getKind().name().toLowerCase();
+            String kn = n.getKind().getValue();
             int priority = !CALLABLE_KINDS.contains(kn) ? 99
                 : pathNodeIds.contains(n.getId()) ? 0
                 : uniqueNamedIds.contains(n.getId()) ? 1 : 99;
@@ -1154,15 +1097,13 @@ public class MCPToolHandler {
 
         final Set<String> ENVELOPE_KINDS = new HashSet<>(Arrays.asList(
             "file", "module", "class", "struct", "interface", "enum",
-            "namespace", "protocol", "trait", "component",
-            "FILE", "MODULE", "CLASS", "STRUCT", "INTERFACE", "ENUM",
-            "NAMESPACE", "PROTOCOL", "TRAIT", "COMPONENT"));
+            "namespace", "protocol", "trait", "component"));
 
         // 构建 range 列表
         List<NodeRange> ranges = new ArrayList<>();
         for (Node n : nodes) {
             if (n.getStartLine() <= 0 || n.getEndLine() <= n.getStartLine()) continue;
-            if (ENVELOPE_KINDS.contains(n.getKind().name())
+            if (ENVELOPE_KINDS.contains(n.getKind().getValue())
                 && (n.getEndLine() - n.getStartLine() + 1) > fileLines.size() * 0.5) continue;
 
             int importance = 1;
@@ -1271,7 +1212,7 @@ public class MCPToolHandler {
         // 按类型统计节点
         Map<String, Integer> kindCounts = new LinkedHashMap<>();
         for (Node n : queries.getAllNodes()) {
-            kindCounts.merge(n.getKind().name(), 1, Integer::sum);
+            kindCounts.merge(n.getKind().getValue(), 1, Integer::sum);
         }
 
         // 按类型统计边

@@ -94,64 +94,65 @@ public class ReferenceResolver {
         try {
             int totalResolved = 0;
             int totalFailed = 0;
-            int prevRemaining = Integer.MAX_VALUE;
+            int totalInserted = 0;
 
-            while (true) {
-                int remaining = queries.countUnresolvedRefs();
-                if (remaining == 0) break;
+            int remaining = queries.countUnresolvedRefs();
+            if (remaining == 0) {
+                logger.info("[Resolution] 没有未解析引用，跳过");
+                return;
+            }
+            logger.info("[Resolution] 开始解析 {} 条未解析引用", remaining);
 
-                // 防止无限循环
-                if (remaining >= prevRemaining) {
-                    logger.warn("[Resolution] 无法继续缩减 unresolved refs (剩余: {})", remaining);
-                    break;
-                }
-                prevRemaining = remaining;
+            List<UnresolvedRef> batch = queries.getUnresolvedRefsBatch(0, BATCH_SIZE);
+            if (batch.isEmpty()) return;
 
-                List<UnresolvedRef> batch = queries.getUnresolvedRefsBatch(0, BATCH_SIZE);
-                if (batch.isEmpty()) break;
+            List<Edge> resolvedEdges = new ArrayList<>();
 
-                List<Edge> resolvedEdges = new ArrayList<>();
-                int maxId = 0;
-
-                for (UnresolvedRef ref : batch) {
-                    String targetId = resolveOne(ref);
-                    if (targetId != null) {
-                        Edge edge = createEdge(ref, targetId);
-                        resolvedEdges.add(edge);
-                        totalResolved++;
-                    } else {
-                        totalFailed++;
-                    }
-                }
-
-                // 持久化解析成功的边
-                if (!resolvedEdges.isEmpty()) {
-                    for (Edge edge : resolvedEdges) {
-                        try {
-                            queries.insertEdge(edge);
-                        } catch (SQLException e) {
-                            logger.debug("[Resolution] 插入边失败: {}", e.getMessage());
+            for (UnresolvedRef ref : batch) {
+                String targetId = resolveOne(ref);
+                if (targetId != null) {
+                    // 验证目标节点是否真实存在于 DB
+                    try {
+                        if (queries.nodeExists(targetId)) {
+                            Edge edge = createEdge(ref, targetId);
+                            resolvedEdges.add(edge);
+                            totalResolved++;
+                        } else {
+                            totalFailed++;
+                            logger.debug("[Resolution] 目标节点不存在: ref={}, targetId={}",
+                                    ref.getReferenceName(), targetId);
                         }
+                    } catch (SQLException e) {
+                        totalFailed++;
+                        logger.debug("[Resolution] 验证目标节点失败: {}", e.getMessage());
                     }
+                } else {
+                    totalFailed++;
                 }
-
-                // 删除已处理的批次
-                int maxIdInBatch = batch.stream()
-                        .mapToInt(ref -> {
-                            try {
-                                // use this as a rough estimate; the batch was sequential
-                                return batch.size();
-                            } catch (Exception e) {
-                                return 0;
-                            }
-                        }).max().orElse(0);
-
-                // 简单方案：删除当前批次对应的所有记录
-                // 使用最新 id 作为截止点
-                queries.deleteResolvedRefs(batch.size());
             }
 
-            logger.info("[Resolution] 解析完成: 成功 {} 条, 失败 {} 条", totalResolved, totalFailed);
+            // 批量持久化解析成功的边
+            if (!resolvedEdges.isEmpty()) {
+                for (Edge edge : resolvedEdges) {
+                    try {
+                        if (queries.insertEdge(edge)) {
+                            totalInserted++;
+                        } else {
+                            logger.debug("[Resolution] 边插入被跳过 (IGNORE): {} -> {}",
+                                    edge.getSource(), edge.getTarget());
+                        }
+                    } catch (SQLException e) {
+                        logger.debug("[Resolution] 插入边异常: {} -> {}, reason: {}",
+                                edge.getSource(), edge.getTarget(), e.getMessage());
+                    }
+                }
+            }
+
+            // 删除所有已处理的未解析引用
+            queries.deleteAllUnresolvedRefs();
+
+            logger.info("[Resolution] 解析完成: 匹配成功 {} 条, 匹配失败 {} 条, 实际写入边 {} 条",
+                    totalResolved, totalFailed, totalInserted);
         } catch (SQLException e) {
             logger.error("[Resolution] 批量解析失败: {}", e.getMessage());
         }

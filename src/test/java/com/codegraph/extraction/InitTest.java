@@ -15,10 +15,10 @@ public class InitTest {
 
 
     public static void  main(String[] args) {
-         args = new String[]{"init","-f","-p","/Users/wugao-pc/Desktop/Project/stream"};
-               int exitCode = new CommandLine(new CodeGraphCli()).execute(args);
-               args = new String[]{"index","-p","/Users/wugao-pc/Desktop/Project/stream"};
-               exitCode = new CommandLine(new CodeGraphCli()).execute(args);
+        //  args = new String[]{"init","-f","-p","/Users/wugao-pc/Desktop/Project/stream"};
+        //        int exitCode = new CommandLine(new CodeGraphCli()).execute(args);
+               args = new String[]{"index","-p","/Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j","--force"};
+              int exitCode = new CommandLine(new CodeGraphCli()).execute(args);
            System.exit(exitCode);
     }
        
@@ -31,7 +31,7 @@ public class InitTest {
 FROM edges e
 LEFT JOIN nodes src ON e.source = src.id
 LEFT JOIN nodes tgt ON e.target = tgt.id
-WHERE e.kind = 'CALLS'
+WHERE e.kind = 'CALLS' and src.name is ='handleSearch'
 ORDER BY e.id
 LIMIT 100
  */

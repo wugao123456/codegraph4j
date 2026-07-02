@@ -160,7 +160,7 @@ java -jar codegraph4j.jar uninstall --target all
 
 ```bash
 java -jar codegraph4j.jar init -p <project-path> [options]
-```
+```/Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j
 
 | 选项 | 说明 |
 |------|------|

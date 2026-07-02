@@ -136,6 +136,9 @@ public class TreeSitterExtractor {
         // 4.1 解析方法调用引用，生成 CALLS 边（启发式）
         resolvePendingReferences(ctx);
 
+        // 4.2 解析标识符引用，生成 references 边（同文件 FIELD/ENUM_MEMBER 匹配）
+        resolveIdentifierReferences(ctx);
+
         // 5. 清理
         ts.ts_tree_delete(tree);
         ts.ts_parser_delete(parser);
@@ -155,16 +158,19 @@ public class TreeSitterExtractor {
         long moduleCount = result.getNodes().stream().filter(n -> n.getKind() == NodeKind.MODULE).count();
         long importCount = result.getNodes().stream().filter(n -> n.getKind() == NodeKind.IMPORT).count();
 
+        long callsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.CALLS).count();
         long extendsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.EXTENDS).count();
         long implementsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.IMPLEMENTS).count();
         long containsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.CONTAINS).count();
+        long importsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.IMPORTS).count();
+        long referencesCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.REFERENCES).count();
 
         logger.debug("[extract] === 解析完成: {} ({}ms) ===", filePathStr, elapsed);
         logger.debug("[extract]   nodes={}  edges={}", result.getNodeCount(), result.getEdgeCount());
         logger.debug("[extract]   按类型: class={}, interface={}, enum={}, method={}, field={}, module={}, import={}",
             classCount, ifaceCount, enumCount, methodCount, fieldCount, moduleCount, importCount);
-        logger.debug("[extract]   按边: contains={}, extends={}, implements={}",
-            containsCount, extendsCount, implementsCount);
+        logger.debug("[extract]   按边: contains={}, calls={}, extends={}, implements={}, imports={}, references={}",
+            containsCount, callsCount, extendsCount, implementsCount, importsCount, referencesCount);
 
         return result;
     }
@@ -235,8 +241,9 @@ public class TreeSitterExtractor {
             logger.trace("[visit] {}→ package '{}'", depthPrefix(depth), pkgName);
             if (pkgName != null && !pkgName.isEmpty()) {
                 ctx.setPackageName(pkgName);
-                ctx.addPackageOrImportNode(NodeKind.MODULE, pkgName, node);
-                logger.debug("[visit] {}  package set: {}", depthPrefix(depth), pkgName);
+                String moduleNodeId = ctx.addPackageOrImportNode(NodeKind.MODULE, pkgName, node);
+                ctx.setModuleNodeId(moduleNodeId);
+                logger.debug("[visit] {}  package set: {}, moduleNodeId={}", depthPrefix(depth), pkgName, moduleNodeId);
             }
         }
 
@@ -247,7 +254,22 @@ public class TreeSitterExtractor {
             if (importInfo != null && importInfo.getModuleName() != null
                 && !importInfo.getModuleName().isEmpty()) {
                 logger.trace("[visit] {}→ import '{}'", depthPrefix(depth), importInfo.getModuleName());
-                ctx.addPackageOrImportNode(NodeKind.IMPORT, importInfo.getModuleName(), node);
+                String importNodeId = ctx.addPackageOrImportNode(NodeKind.IMPORT, importInfo.getModuleName(), node);
+
+                // 创建 module → import 的 imports 边和 CONTAINS 边
+                String moduleId = ctx.getModuleNodeId();
+                if (moduleId != null) {
+                    TSPoint startPoint = ts.ts_node_start_point(node);
+                    Map<String, Object> importMeta = new HashMap<>();
+                    importMeta.put("provenance", "tree-sitter");
+                    ctx.addEdge(moduleId, importNodeId, EdgeKind.IMPORTS,
+                        startPoint.row + 1, startPoint.column + 1, "tree-sitter", importMeta);
+                    // CONTAINS: module → import
+                    ctx.addEdge(moduleId, importNodeId, EdgeKind.CONTAINS,
+                        startPoint.row + 1, startPoint.column + 1);
+                    logger.debug("[visit] {}  added imports + contains: module={} → import={}",
+                        depthPrefix(depth), moduleId, importNodeId);
+                }
             } else {
                 logger.trace("[visit] {}→ import (skipped, empty)", depthPrefix(depth));
             }
@@ -272,6 +294,23 @@ public class TreeSitterExtractor {
             visited = true;
             logger.trace("[visit] {}→ processMethodInvocation (super) '{}'", depthPrefix(depth), nodeType);
             processMethodInvocation(node, ctx, extractor, true);
+        }
+
+        // ---- Object creation expression (new ClassName()) → instantiates ----
+        if (!visited && "object_creation_expression".equals(nodeType)) {
+            visited = true;
+            logger.trace("[visit] {}→ processObjectCreation '{}'", depthPrefix(depth), nodeType);
+            processObjectCreation(node, ctx, ts);
+        }
+
+        // ---- Identifier (inside method body) → references tracking ----
+        if (!visited && "identifier".equals(nodeType) && ctx.getCurrentMethodId() != null) {
+            visited = true;
+            String identName = TreeSitterHelpers.getNodeText(node, source, ts);
+            if (identName != null && !identName.isEmpty()) {
+                TSPoint startPoint = ts.ts_node_start_point(node);
+                ctx.addIdentifierRef(identName, startPoint.row + 1, startPoint.column + 1);
+            }
         }
 
         // ---- Recursion: visit children ----
@@ -899,6 +938,53 @@ public class TreeSitterExtractor {
     }
 
     // =========================================================================
+    // Object creation expression (new ClassName()) → instantiates
+    // =========================================================================
+
+    /**
+     * 处理 object_creation_expression（new ClassName()），
+     * 提取被实例化的类名，记录为未解析引用供 resolution 阶段创建 instantiates 边。
+     */
+    private void processObjectCreation(TSNode node, ExtractorContext ctx, TreeSitterNative ts) {
+        String source = ctx.getSource();
+
+        // 提取被实例化的类型名: object_creation_expression → type: type_identifier
+        TSNode typeNode = TreeSitterHelpers.getChildByField(node, "type", ts);
+        if (ts.ts_node_is_null(typeNode)) {
+            // 备用：遍历 named children 找 type_identifier
+            int childCount = ts.ts_node_named_child_count(node);
+            for (int i = 0; i < childCount; i++) {
+                TSNode child = ts.ts_node_named_child(node, i);
+                if ("type_identifier".equals(ts.ts_node_type(child))
+                    || "generic_type".equals(ts.ts_node_type(child))) {
+                    typeNode = child;
+                    break;
+                }
+            }
+        }
+
+        if (ts.ts_node_is_null(typeNode)) {
+            logger.debug("[instantiates] processObjectCreation: no type node found");
+            return;
+        }
+
+        String typeName = TreeSitterHelpers.getNodeText(typeNode, source, ts);
+        if (typeName == null || typeName.isEmpty()) return;
+
+        TSPoint startPoint = ts.ts_node_start_point(node);
+        int line = startPoint.row + 1;
+        int column = startPoint.column + 1;
+
+        String callerId = ctx.getCurrentMethodId();
+        if (callerId != null) {
+            ctx.getUnresolvedRefs().add(new com.codegraph.resolution.frameworks.UnresolvedRef(
+                callerId, typeName, "instantiates",
+                ctx.getFilePath(), line, column));
+            logger.debug("[instantiates] new {}() at {}:{}, caller={}", typeName, line, column, callerId);
+        }
+    }
+
+    // =========================================================================
     // Heuristic call reference resolution
     // =========================================================================
 
@@ -986,6 +1072,60 @@ public class TreeSitterExtractor {
         }
 
         logger.debug("[calls] === 启发式 CALLS 边解析完成: 生成 {} 条边 ===", callsEdgesAdded);
+    }
+
+    // =========================================================================
+    // Identifier reference resolution → references edges
+    // =========================================================================
+
+    /**
+     * 解析在 AST 遍历期间收集到的标识符引用，匹配同文件中的
+     * FIELD 和 ENUM_MEMBER 节点，生成 references 边（valueRef）。
+     */
+    private void resolveIdentifierReferences(ExtractorContext ctx) {
+        List<ExtractorContext.IdentifierRef> idRefs = ctx.getIdentifierRefs();
+        if (idRefs.isEmpty()) return;
+
+        // 收集同文件中的 FIELD、ENUM_MEMBER 节点
+        java.util.Map<String, List<com.codegraph.core.Node>> fieldIndex = new java.util.HashMap<>();
+        for (com.codegraph.core.Node node : ctx.getNodes()) {
+            if (node.getKind() == NodeKind.FIELD || node.getKind() == NodeKind.ENUM_MEMBER) {
+                fieldIndex.computeIfAbsent(node.getName(), k -> new java.util.ArrayList<>()).add(node);
+            }
+        }
+
+        if (fieldIndex.isEmpty()) return;
+
+        logger.debug("[references] === 标识符引用解析开始 ===");
+        logger.debug("[references] 待解析标识符引用: {} 个, 同文件 FIELD/ENUM_MEMBER: {} 个",
+            idRefs.size(),
+            fieldIndex.values().stream().mapToInt(List::size).sum());
+
+        // 去重：避免同一方法多次引用同一目标产生重复边
+        java.util.Set<String> addedEdges = new java.util.HashSet<>();
+        int refEdgesAdded = 0;
+
+        for (ExtractorContext.IdentifierRef ref : idRefs) {
+            List<com.codegraph.core.Node> candidates = fieldIndex.get(ref.identifierName);
+            if (candidates == null || candidates.isEmpty()) continue;
+
+            for (com.codegraph.core.Node target : candidates) {
+                String edgeKey = ref.methodId + "|" + target.getId();
+                if (addedEdges.contains(edgeKey)) continue;
+                addedEdges.add(edgeKey);
+
+                Map<String, Object> metadata = new HashMap<>();
+                metadata.put("valueRef", true);
+                metadata.put("provenance", "heuristic");
+                ctx.addEdge(ref.methodId, target.getId(), EdgeKind.REFERENCES,
+                    ref.line, ref.column, "heuristic", metadata);
+                refEdgesAdded++;
+                logger.debug("[references]   {} → {} (field={})",
+                    ref.methodId, target.getId(), ref.identifierName);
+            }
+        }
+
+        logger.debug("[references] === 标识符引用解析完成: 生成 {} 条 references 边 ===", refEdgesAdded);
     }
 
     /**

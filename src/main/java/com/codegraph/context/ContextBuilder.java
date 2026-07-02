@@ -26,13 +26,11 @@ public class ContextBuilder {
     private static final Logger logger = LoggerFactory.getLogger(ContextBuilder.class);
 
     private static final Set<String> DEFINITION_KINDS = new HashSet<>(Arrays.asList(
-        "class", "interface", "struct", "trait", "protocol", "enum", "type_alias",
-        "CLASS", "INTERFACE", "STRUCT", "TRAIT", "PROTOCOL", "ENUM", "TYPE_ALIAS"
+        "class", "interface", "struct", "trait", "protocol", "enum", "type_alias"
     ));
 
     private static final Set<String> CALLABLE_KINDS = new HashSet<>(Arrays.asList(
-        "method", "function", "component", "constructor",
-        "METHOD", "FUNCTION", "COMPONENT", "CONSTRUCTOR"
+        "method", "function", "component", "constructor"
     ));
 
     /**
@@ -96,12 +94,8 @@ public class ContextBuilder {
         Subgraph result = new Subgraph();
 
         // Step 1: 从查询中提取符号名
-        // 设计原因：将自然语言查询转换为代码符号，是后续精确搜索的基础
-        // 提取规则：去除文件扩展名、过滤短 token（<3）、匹配合法标识符模式
         List<String> symbols = extractSymbols(query);
         if (symbols.isEmpty()) {
-            // 降级策略：无有效符号时，退化为纯文本搜索
-            // 典型场景：用户输入 "how to handle authentication" 这类自然语言问题
             try {
                 List<Node> textResults = queries.searchNodes(query);
                 for (Node n : textResults) result.addNode(n);
@@ -112,85 +106,89 @@ public class ContextBuilder {
             return result;
         }
 
-        // Step 2: Exact match 搜索 — 最高优先级，保证精准度
-        // 设计原因：精确匹配是最可靠的搜索方式，优先获取确定性结果
-        Map<String, Node> exactMatches = new LinkedHashMap<>();
+        // === 分数驱动的搜索管道 ===
+        // 所有搜索步骤产生的候选结果统一用 score 排序，保证多通道结果可比
+        List<SearchResult> searchResults = new ArrayList<>();
+        Set<String> searchIdSet = new HashSet<>();
+        String queryLower = query.toLowerCase();
+        boolean isTestQuery = queryLower.contains("test") || queryLower.contains("spec");
+
+        // ---- Step 2: Exact match 搜索（最高优先级） ----
         try {
             for (String sym : symbols) {
-                // 双重搜索：先按完全限定名（如 com.codegraph.UserService），再按简单名
-                // 原因：qualified name 唯一确定一个符号，普通 name 可能有多个同名
                 List<Node> byQName = queries.getNodesByQualifiedName(sym);
                 List<Node> byName = queries.getNodesByName(sym);
                 Set<String> seen = new HashSet<>();
                 for (Node n : byQName) {
-                    if (seen.add(n.getId())) exactMatches.put(n.getId(), n);
+                    if (seen.add(n.getId()) && searchIdSet.add(n.getId())) {
+                        searchResults.add(new SearchResult(n, 80));
+                    }
                 }
                 for (Node n : byName) {
-                    if (seen.add(n.getId())) exactMatches.put(n.getId(), n);
+                    if (seen.add(n.getId()) && searchIdSet.add(n.getId())) {
+                        searchResults.add(new SearchResult(n, 70));
+                    }
                 }
             }
 
             // Co-location boost: 同文件多符号命中加权
-            // 设计原理：如果一个文件中同时包含查询中的多个符号，说明该文件更可能是用户关心的核心文件
-            // 例如查询 "UserService login"，如果 UserService.java 同时包含 login() 和 getUser() 方法，
-            // 那么 UserService.java 中的所有符号都应优先返回
-            if (exactMatches.size() > 1) {
+            if (searchResults.size() > 1) {
                 Map<String, Set<String>> fileSymbolCounts = new HashMap<>();
-                for (Node n : exactMatches.values()) {
-                    if (n.getFilePath() != null) {
+                for (SearchResult sr : searchResults) {
+                    if (sr.node.getFilePath() != null) {
                         fileSymbolCounts
-                            .computeIfAbsent(n.getFilePath(), k -> new HashSet<>())
-                            .add(n.getName().toLowerCase());
+                            .computeIfAbsent(sr.node.getFilePath(), k -> new HashSet<>())
+                            .add(sr.node.getName().toLowerCase());
                     }
                 }
-                // 按文件内命中符号数降序排序
-                List<Node> sorted = new ArrayList<>(exactMatches.values());
-                sorted.sort((a, b) -> {
-                    int ca = fileSymbolCounts.getOrDefault(a.getFilePath(), Collections.emptySet()).size();
-                    int cb = fileSymbolCounts.getOrDefault(b.getFilePath(), Collections.emptySet()).size();
-                    return cb - ca;
-                });
-                exactMatches.clear();
-                for (Node n : sorted) exactMatches.put(n.getId(), n);
+                for (SearchResult sr : searchResults) {
+                    int symbolCount = fileSymbolCounts
+                        .getOrDefault(sr.node.getFilePath(), Collections.emptySet()).size();
+                    if (symbolCount > 1) {
+                        sr.score += (symbolCount - 1) * 20;
+                    }
+                }
+                searchResults.sort((a, b) -> Double.compare(b.score, a.score));
             }
 
-            // 结果截断：限制精确匹配数量
-            // 原因：精确匹配通常已经足够相关，过多结果会增加后续处理负担
-            // 限制为 searchLimit * 2，给 co-location boost 后的排序留出空间
-            int limit = (int) Math.ceil(options.searchLimit * 2.0);
-            int count = 0;
-            for (Map.Entry<String, Node> e : exactMatches.entrySet()) {
-                if (count++ >= limit) break;
-                result.addNode(e.getValue());
+            // 截断
+            int exactLimit = (int) Math.ceil(options.searchLimit * 2.0);
+            if (searchResults.size() > exactLimit) {
+                searchResults = new ArrayList<>(searchResults.subList(0, exactLimit));
+                searchIdSet.clear();
+                for (SearchResult sr : searchResults) searchIdSet.add(sr.node.getId());
             }
         } catch (SQLException e) {
             logger.warn("Exact match failed: {}", e.getMessage());
         }
 
-        // Step 3: Prefix match — 针对类型定义的模糊匹配
-        // 设计原因：用户可能只记得类型名的一部分，如 "Rest" → "RestController"
-        // 只针对定义类型（class/interface/enum 等），避免匹配变量名导致噪音
+        // ---- Step 3: Prefix match（含 stem variants + brevityBonus） ----
         try {
             for (String sym : symbols) {
-                // 确定前缀匹配模式：
-                // - 全小写短词（如 "rest"）：转换为 Title-Case "Rest" 进行前缀匹配
-                // - 已首字母大写（如 "Rest"）：直接用原符号进行前缀匹配
-                // - camelCase（如 "userService"）：用首字母大写形式 "UserService" 进行前缀匹配
-                // - 已包含大写字母的长词：直接用原符号
-                String prefixPattern = determinePrefixPattern(sym);
-                if (prefixPattern == null) continue;
+                // 扩展词干变体
+                Set<String> expandedSyms = new LinkedHashSet<>();
+                expandedSyms.add(sym);
+                for (String variant : SearchUtils.getStemVariants(sym)) {
+                    expandedSyms.add(variant);
+                }
+                for (String expandedSym : expandedSyms) {
+                    // Title-case 转换
+                    String titleCased = expandedSym.substring(0, 1).toUpperCase()
+                        + expandedSym.substring(1).toLowerCase();
+                    if (titleCased.equals(expandedSym) && Character.isUpperCase(expandedSym.charAt(0))) continue;
 
-                // 文本搜索获取候选，再做前缀过滤
-                List<Node> prefixResults = queries.searchNodes(prefixPattern);
-                int count = 0;
-                for (Node n : prefixResults) {
-                    if (count++ >= options.searchLimit) break;
-                    // 三重过滤：去重 + 定义类型 + 前缀匹配
-                    // 确保只添加有意义的类型定义节点
-                    if (!result.hasNode(n.getId()) &&
-                        DEFINITION_KINDS.contains(n.getKind().name()) &&
-                        n.getName().toLowerCase().startsWith(prefixPattern.toLowerCase())) {
-                        result.addNode(n);
+                    List<Node> prefixResults = queries.searchNodes(titleCased);
+                    int count = 0;
+                    for (Node n : prefixResults) {
+                        if (count++ >= options.searchLimit * 3) break;
+                        if (searchIdSet.contains(n.getId())) continue;
+                        if (!DEFINITION_KINDS.contains(n.getKind().getValue())) continue;
+                        if (!n.getName().toLowerCase().startsWith(titleCased.toLowerCase())) continue;
+
+                        // brevityBonus: 偏爱短类名
+                        double brevityBonus = Math.max(0, 10 - (n.getName().length() - titleCased.length()) / 3.0);
+                        searchResults.add(new SearchResult(n, 15 + brevityBonus));
+                        searchIdSet.add(n.getId());
                     }
                 }
             }
@@ -198,29 +196,276 @@ public class ContextBuilder {
             logger.warn("Prefix match failed: {}", e.getMessage());
         }
 
-        // 设置入口节点：将所有搜索结果标记为 root，作为后续图遍历的起点
-        for (String id : result.nodes.keySet()) {
-            result.addRoot(id);
+        // ---- Step 4: FTS 文本搜索（多词累计 boost） ----
+        try {
+            List<String> searchTerms = SearchUtils.extractSearchTerms(query);
+            if (!searchTerms.isEmpty()) {
+                // 排除 import 类型节点（它们会淹没 FTS 结果）
+                Set<String> searchKinds = new LinkedHashSet<>(DEFINITION_KINDS);
+                searchKinds.addAll(Arrays.asList(
+                    "file", "module", "function", "method", "property", "field",
+                    "variable", "constant", "enum_member", "namespace", "export", "route", "component"
+                ));
+
+                // 逐词搜索，累计多词命中
+                Map<String, double[]> termResultsMap = new LinkedHashMap<>(); // nodeId → [maxScore, termHits]
+                for (String term : searchTerms) {
+                    List<Node> termResults = queries.searchNodes(term,
+                        options.searchLimit * 3, searchKinds.toArray(new String[0]));
+                    for (Node n : termResults) {
+                        double[] entry = termResultsMap.get(n.getId());
+                        if (entry == null) {
+                            entry = new double[]{0, 1};
+                            termResultsMap.put(n.getId(), entry);
+                        } else {
+                            entry[1]++; // termHints++
+                        }
+                        // 保持最高分
+                        entry[0] = Math.max(entry[0], 10);
+                    }
+                }
+
+                // 多词命中 boost 并加入结果
+                for (Map.Entry<String, double[]> e : termResultsMap.entrySet()) {
+                    if (searchIdSet.contains(e.getKey())) continue;
+                    double[] v = e.getValue();
+                    double score = v[0] + (v[1] - 1) * 5; // 每多一个 term 匹配 +5
+                    // 需要 resolve node
+                    try {
+                        Node node = queries.getNode(e.getKey());
+                        if (node != null) {
+                            searchResults.add(new SearchResult(node, score));
+                            searchIdSet.add(node.getId());
+                        }
+                    } catch (SQLException ignored) {}
+                }
+            }
+        } catch (SQLException e) {
+            logger.warn("FTS text search failed: {}", e.getMessage());
         }
 
-        // Step 4: 从入口节点 BFS 扩展子图
-        // 设计原因：搜索结果可能只是孤立的节点，需要通过图遍历补全上下文关系
-        // 例如找到 UserService.login()，需要扩展到其调用的 AuthService 和被调用的位置
+        // 测试文件降权
+        if (!isTestQuery) {
+            for (SearchResult sr : searchResults) {
+                if (SearchUtils.isTestFile(sr.node.getFilePath())) {
+                    sr.score *= 0.3;
+                }
+            }
+        }
+
+        // ---- Step 5a: 多术语共现重排序 ----
+        List<String> queryTermsForBoost = SearchUtils.extractSearchTerms(query);
+        if (queryTermsForBoost.size() >= 2) {
+            // 词项分组：子串关系的词视为同一概念
+            List<List<String>> termGroups = new ArrayList<>();
+            List<String> sorted = new ArrayList<>(queryTermsForBoost);
+            sorted.sort((a, b) -> b.length() - a.length());
+            Set<String> assigned = new HashSet<>();
+            for (String term : sorted) {
+                if (assigned.contains(term)) continue;
+                List<String> group = new ArrayList<>();
+                group.add(term);
+                assigned.add(term);
+                for (String other : sorted) {
+                    if (assigned.contains(other)) continue;
+                    if (term.contains(other) || other.contains(term)) {
+                        group.add(other);
+                        assigned.add(other);
+                    }
+                }
+                termGroups.add(group);
+            }
+
+            // 收集区分性标识符的精确匹配 ID
+            Set<String> distinctiveExactMatchIds = new HashSet<>();
+            for (SearchResult sr : searchResults) {
+                String name = sr.node.getName() != null ? sr.node.getName() : "";
+                for (String sym : symbols) {
+                    if (SearchUtils.isDistinctiveIdentifier(sym)
+                        && name.equalsIgnoreCase(sym)) {
+                        distinctiveExactMatchIds.add(sr.node.getId());
+                    }
+                }
+            }
+
+            // 按多词命中 boost 或 dampen
+            for (SearchResult sr : searchResults) {
+                String nameLower = sr.node.getName() != null ? sr.node.getName().toLowerCase() : "";
+                String filePath = sr.node.getFilePath() != null ? sr.node.getFilePath().toLowerCase() : "";
+                // 检查目录段
+                String[] dirSegments = new String[0];
+                int lastSep = filePath.lastIndexOf('/');
+                if (lastSep >= 0) {
+                    dirSegments = filePath.substring(0, lastSep).split("/");
+                }
+
+                int matchCount = 0;
+                for (List<String> group : termGroups) {
+                    boolean groupMatches = false;
+                    for (String term : group) {
+                        if (nameLower.contains(term)) { groupMatches = true; break; }
+                        for (String seg : dirSegments) {
+                            if (seg.equals(term)) { groupMatches = true; break; }
+                        }
+                        if (groupMatches) break;
+                    }
+                    if (groupMatches) matchCount++;
+                }
+
+                if (matchCount >= 2) {
+                    sr.score *= (1 + matchCount * 0.5); // 2词→2x, 3词→2.5x
+                } else if (distinctiveExactMatchIds.contains(sr.node.getId())) {
+                    // 区分性标识符精确匹配，保持原分
+                } else if (sr.score >= 70) {
+                    // 普通词精确匹配，无其他词佐证 → 降权
+                    sr.score *= 0.3;
+                } else {
+                    // 单术语匹配 → 温和降权
+                    sr.score *= 0.6;
+                }
+            }
+            searchResults.sort((a, b) -> Double.compare(b.score, a.score));
+        }
+
+        // ---- Step 5b: CamelCase 边界匹配（LIKE 子串查询） ----
+        if (!symbols.isEmpty()) {
+            Set<String> camelSearchedTerms = new HashSet<>();
+            Map<String, double[]> camelNodeTerms = new LinkedHashMap<>(); // nodeId → [maxScore, termCount]
+
+            for (String sym : symbols) {
+                String titleCased = sym.substring(0, 1).toUpperCase() + sym.substring(1).toLowerCase();
+                if (titleCased.length() < 3) continue;
+                String termKey = titleCased.toLowerCase();
+                if (camelSearchedTerms.contains(termKey)) continue;
+                camelSearchedTerms.add(termKey);
+
+                try {
+                    List<Node> likeResults = queries.findNodesByNameSubstring(titleCased, 200,
+                        DEFINITION_KINDS.toArray(new String[0]), true);
+                    for (Node n : likeResults) {
+                        String name = n.getName();
+                        int idx = name.indexOf(titleCased);
+                        if (idx <= 0) continue;
+                        // CamelCase 边界检测：匹配位置前一个字符必须是字母
+                        if (idx > 0 && !Character.isLetter(name.charAt(idx - 1))) continue;
+                        if (searchIdSet.contains(n.getId())) continue;
+                        if (SearchUtils.isTestFile(n.getFilePath()) && !isTestQuery) continue;
+
+                        int pathScore = SearchUtils.scorePathRelevance(n.getFilePath(), query);
+                        double brevityBonus = Math.max(0, 6 - (name.length() - titleCased.length()) / 4.0);
+                        double score = 8 + brevityBonus + pathScore;
+
+                        double[] entry = camelNodeTerms.get(n.getId());
+                        if (entry == null) {
+                            entry = new double[]{score, 1};
+                            camelNodeTerms.put(n.getId(), entry);
+                        } else {
+                            entry[1]++; // 多词命中计数
+                            entry[0] = Math.max(entry[0], score);
+                        }
+                    }
+                } catch (SQLException ignored) {}
+            }
+
+            // 合并 CamelCase 结果（含多词 boost）
+            List<SearchResult> camelResults = new ArrayList<>();
+            for (Map.Entry<String, double[]> e : camelNodeTerms.entrySet()) {
+                double[] v = e.getValue();
+                double score = v[0] * (1 + v[1]) + (v[1] - 1) * 30;
+                try {
+                    Node node = queries.getNode(e.getKey());
+                    if (node != null) {
+                        camelResults.add(new SearchResult(node, score));
+                    }
+                } catch (SQLException ignored) {}
+            }
+            camelResults.sort((a, b) -> Double.compare(b.score, a.score));
+            int maxCamelTotal = options.searchLimit;
+            for (SearchResult sr : camelResults.subList(0, Math.min(maxCamelTotal, camelResults.size()))) {
+                searchResults.add(sr);
+                searchIdSet.add(sr.node.getId());
+            }
+        }
+
+        // ---- Step 5c: 复合词匹配（≥2 query terms 在同一类名中） ----
+        if (symbols.size() >= 2) {
+            Map<String, double[]> compoundTermMap = new LinkedHashMap<>(); // nodeId → [_, termCount]
+            for (String sym : symbols) {
+                String titleCased = sym.substring(0, 1).toUpperCase() + sym.substring(1).toLowerCase();
+                if (titleCased.length() < 3) continue;
+
+                try {
+                    List<Node> likeResults = queries.findNodesByNameSubstring(titleCased, 200,
+                        DEFINITION_KINDS.toArray(new String[0]), false);
+                    for (Node n : likeResults) {
+                        if (searchIdSet.contains(n.getId())) continue;
+                        if (SearchUtils.isTestFile(n.getFilePath()) && !isTestQuery) continue;
+
+                        double[] entry = compoundTermMap.get(n.getId());
+                        if (entry == null) {
+                            entry = new double[]{0, 1};
+                            compoundTermMap.put(n.getId(), entry);
+                        } else {
+                            entry[1]++;
+                        }
+                    }
+                } catch (SQLException ignored) {}
+            }
+
+            List<SearchResult> compoundResults = new ArrayList<>();
+            for (Map.Entry<String, double[]> e : compoundTermMap.entrySet()) {
+                double[] v = e.getValue();
+                if (v[1] < 2) continue; // 至少匹配 2 个不同词
+                try {
+                    Node node = queries.getNode(e.getKey());
+                    if (node != null) {
+                        int pathScore = SearchUtils.scorePathRelevance(node.getFilePath(), query);
+                        double brevityBonus = Math.max(0, 6 - node.getName().length() / 8.0);
+                        double score = 10 + (v[1] - 1) * 20 + pathScore + brevityBonus;
+                        compoundResults.add(new SearchResult(node, score));
+                    }
+                } catch (SQLException ignored) {}
+            }
+            compoundResults.sort((a, b) -> Double.compare(b.score, a.score));
+            int maxCompound = (int) Math.ceil(options.searchLimit / 2.0);
+            for (SearchResult sr : compoundResults.subList(0, Math.min(maxCompound, compoundResults.size()))) {
+                searchResults.add(sr);
+                searchIdSet.add(sr.node.getId());
+            }
+        }
+
+        // ---- 最终排序和截断 ----
+        searchResults.sort((a, b) -> Double.compare(b.score, a.score));
+        if (searchResults.size() > options.searchLimit * 3) {
+            searchResults = new ArrayList<>(searchResults.subList(0, options.searchLimit * 3));
+        }
+
+        // 按最低分数过滤
+        List<SearchResult> filtered = new ArrayList<>();
+        for (SearchResult sr : searchResults) {
+            if (sr.score >= options.minScore) filtered.add(sr);
+        }
+
+        // 入口点数量上限
+        if (filtered.size() > options.searchLimit) {
+            filtered = new ArrayList<>(filtered.subList(0, options.searchLimit));
+        }
+
+        // 添加入口点到子图
+        for (SearchResult sr : filtered) {
+            result.addNode(sr.node);
+            result.addRoot(sr.node.getId());
+        }
+
+        // Step 6: BFS 图扩展
         if (result.nodeCount() > 0) {
             Set<String> allRootIds = new LinkedHashSet<>(result.roots);
-
-            // 对每个入口节点做 BFS 扩展
-            // 限制每个根节点的扩展数量：maxNodes / rootCount
-            // 原因：避免某个热门节点（如 Utils 类）过度扩展，挤占其他节点的预算
             for (String rootId : new ArrayList<>(allRootIds)) {
                 TraversalOptions tOpts = new TraversalOptions();
                 tOpts.maxDepth = options.traversalDepth;
                 tOpts.limit = options.maxNodes / Math.max(1, allRootIds.size());
-                tOpts.direction = "both"; // 无向遍历：同时获取 callers 和 callees
+                tOpts.direction = "both";
                 tOpts.includeStart = true;
-                // 边类型过滤：只包含语义关系边，排除 CONTAINS（AST 父子关系）
-                // 原因：CONTAINS 边会导致子图膨胀，包含大量无关的方法/字段节点
-                // 仅保留：calls, references, extends, implements, overrides, instantiates, returns, type_of, imports
                 tOpts.edgeKinds = RELEVANT_EDGE_KINDS;
 
                 com.codegraph.graph.GraphTraverser.Subgraph sg = traverser.traverseBFS(rootId, tOpts);
@@ -265,7 +510,7 @@ public class ContextBuilder {
 
                 List<Node> callables = new ArrayList<>();
                 for (Node n : hits) {
-                    if (CALLABLE_KINDS.contains(n.getKind().name())) callables.add(n);
+                    if (CALLABLE_KINDS.contains(n.getKind().getValue())) callables.add(n);
                 }
 
                 tokenNodes.put(token, callables);
@@ -368,44 +613,21 @@ public class ContextBuilder {
         return new Subgraph();
     }
 
-    /**
-     * 根据符号确定前缀匹配模式。
-     * 优化策略：
-     * - 全小写短词（如 "rest"）：转换为 Title-Case "Rest"，匹配 PascalCase 类型名
-     * - 首字母大写（如 "Rest"）：保留原符号，支持前缀匹配 "RestController"
-     * - camelCase（如 "userService"）：首字母大写为 "UserService"，匹配类型定义
-     * - 全大写（如 "HTTP"）：跳过，通常是常量而非类型定义
-     *
-     * @return 前缀匹配模式字符串，不需要前缀匹配时返回 null
-     */
-    private String determinePrefixPattern(String symbol) {
-        if (symbol == null || symbol.length() < 2) return null;
-
-        boolean hasUpperCase = false;
-        boolean hasLowerCase = false;
-        for (char c : symbol.toCharArray()) {
-            if (Character.isUpperCase(c)) hasUpperCase = true;
-            if (Character.isLowerCase(c)) hasLowerCase = true;
-        }
-
-        // 全大写：通常是常量，不做前缀匹配
-        if (hasUpperCase && !hasLowerCase) return null;
-
-        // 首字母大写：直接使用原符号
-        if (Character.isUpperCase(symbol.charAt(0))) {
-            return symbol;
-        }
-
-        // 首字母小写且包含大写（camelCase）：首字母大写
-        if (hasUpperCase) {
-            return Character.toUpperCase(symbol.charAt(0)) + symbol.substring(1);
-        }
-
-        // 全小写：转换为 Title-Case
-        return Character.toUpperCase(symbol.charAt(0)) + symbol.substring(1);
-    }
-
     // ========== 内部类 ==========
+
+    /**
+     * 搜索结果 — 节点 + 相关性分数。
+     * <p>供分数驱动的搜索管道使用，所有搜索通道产生的结果通过 score 统一排序比较。
+     */
+    public static class SearchResult {
+        public final Node node;
+        public double score;
+
+        public SearchResult(Node node, double score) {
+            this.node = node;
+            this.score = score;
+        }
+    }
 
     /**
      * 查找选项 — 配置上下文查找的搜索参数。

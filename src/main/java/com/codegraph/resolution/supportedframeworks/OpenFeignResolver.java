@@ -222,11 +222,12 @@ public class OpenFeignResolver implements FrameworkResolver {
                         edge.setProvenance("framework:openfeign");
 
                         try {
-                            context.getQueries().insertEdge(edge);
-                            edgeCount++;
-                            totalEdges++;
-                            logger.info("[OpenFeignResolver] 边创建成功: {}.{}() → {} (targetId={})",
-                                fieldName, calledMethod, fieldType, targetId);
+                            if (context.getQueries().insertEdge(edge)) {
+                                edgeCount++;
+                                totalEdges++;
+                                logger.info("[OpenFeignResolver] 边创建成功: {}.{}() → {} (targetId={})",
+                                    fieldName, calledMethod, fieldType, targetId);
+                            }
                         } catch (Exception e) {
                             logger.warn("[OpenFeignResolver] 边插入失败: source={}, target={}, error={}",
                                 node.getId(), targetId, e.getMessage());

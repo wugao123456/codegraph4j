@@ -47,7 +47,7 @@ public class QueryBuilder {
         
         try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
             stmt.setString(1, node.getId());
-            stmt.setString(2, node.getKind().name());
+            stmt.setString(2, node.getKind().getValue());
             stmt.setString(3, node.getName());
             stmt.setString(4, node.getQualifiedName());
             stmt.setString(5, node.getFilePath());
@@ -72,8 +72,12 @@ public class QueryBuilder {
         }
     }
 
-    public void insertEdge(Edge edge) throws SQLException {
-        String sql = "INSERT INTO edges (source, target, kind, metadata, line, col, provenance) " +
+    /**
+     * 插入边（INSERT OR IGNORE，跳过外键约束失败的行）。
+     * @return true 表示实际插入了行，false 表示被 IGNORE（FK 约束失败）
+     */
+    public boolean insertEdge(Edge edge) throws SQLException {
+        String sql = "INSERT OR IGNORE INTO edges (source, target, kind, metadata, line, col, provenance) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?)";
         
         try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
@@ -85,7 +89,7 @@ public class QueryBuilder {
             stmt.setInt(6, edge.getColumn());
             stmt.setString(7, edge.getProvenance());
             
-            stmt.executeUpdate();
+            return stmt.executeUpdate() > 0;
         }
     }
 
@@ -348,7 +352,7 @@ public class QueryBuilder {
         String sql = "SELECT * FROM nodes WHERE kind = ?";
 
         try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
-            stmt.setString(1, kind.name());
+            stmt.setString(1, kind.getValue());
             ResultSet rs = stmt.executeQuery();
             while (rs.next()) {
                 nodes.add(mapResultSetToNode(rs));
@@ -520,7 +524,7 @@ public class QueryBuilder {
     private Node mapResultSetToNode(ResultSet rs) throws SQLException {
         Node node = new Node();
         node.setId(rs.getString("id"));
-        node.setKind(NodeKind.valueOf(rs.getString("kind")));
+        node.setKind(NodeKind.fromValue(rs.getString("kind")));
         node.setName(rs.getString("name"));
         node.setQualifiedName(rs.getString("qualified_name"));
         node.setFilePath(rs.getString("file_path"));
@@ -662,13 +666,24 @@ public class QueryBuilder {
     }
 
     /**
-     * 删除已解析的未解析引用（按 id）。
+     * 删除所有未解析引用（整批处理完成后调用）。
      */
-    public void deleteResolvedRefs(int maxId) throws SQLException {
-        String sql = "DELETE FROM unresolved_refs WHERE id <= ?";
+    public void deleteAllUnresolvedRefs() throws SQLException {
+        String sql = "DELETE FROM unresolved_refs";
         try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
-            stmt.setInt(1, maxId);
             stmt.executeUpdate();
+        }
+    }
+
+    /**
+     * 检查节点是否存在。
+     */
+    public boolean nodeExists(String nodeId) throws SQLException {
+        String sql = "SELECT 1 FROM nodes WHERE id = ? LIMIT 1";
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql)) {
+            stmt.setString(1, nodeId);
+            ResultSet rs = stmt.executeQuery();
+            return rs.next();
         }
     }
 
@@ -684,5 +699,101 @@ public class QueryBuilder {
             }
         }
         return 0;
+    }
+
+    // =========================================================================
+    // 增强搜索方法（供 CamelCase 边界匹配和 FTS 使用）
+    // =========================================================================
+
+    /**
+     * 按名称子串搜索节点（LIKE 查询），支持 kind 过滤和前缀排除。
+     * <p>对标 TS 中 findNodesByNameSubstring()，用于 CamelCase 边界匹配：
+     * 搜索 "Search" 可匹配 "TransportSearchAction" 这样的复合类名。
+     *
+     * @param substring     搜索的子串
+     * @param limit         最大返回数
+     * @param kinds         节点类型过滤（null 表示不过滤）
+     * @param excludePrefix 是否排除以子串开头的节点（CamelCase 匹配时排除前缀匹配的重复结果）
+     * @return 匹配的节点列表
+     */
+    public List<Node> findNodesByNameSubstring(String substring, int limit,
+                                                String[] kinds, boolean excludePrefix) throws SQLException {
+        List<Node> nodes = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("SELECT * FROM nodes WHERE LOWER(name) LIKE ?");
+        if (excludePrefix) {
+            sql.append(" AND LOWER(name) NOT LIKE ?");
+        }
+        if (kinds != null && kinds.length > 0) {
+            sql.append(" AND kind IN (");
+            for (int i = 0; i < kinds.length; i++) {
+                if (i > 0) sql.append(", ");
+                sql.append("?");
+            }
+            sql.append(")");
+        }
+        sql.append(" LIMIT ?");
+
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql.toString())) {
+            int idx = 1;
+            stmt.setString(idx++, "%" + substring.toLowerCase() + "%");
+            if (excludePrefix) {
+                stmt.setString(idx++, substring.toLowerCase() + "%");
+            }
+            if (kinds != null) {
+                for (String kind : kinds) {
+                    stmt.setString(idx++, kind);
+                }
+            }
+            stmt.setInt(idx, limit);
+
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                nodes.add(mapResultSetToNode(rs));
+            }
+        }
+        return nodes;
+    }
+
+    /**
+     * 带 kind 过滤的搜索节点。
+     * <p>在 name、qualified_name、docstring 中进行 LIKE 模糊匹配。
+     *
+     * @param query 搜索关键词
+     * @param limit 最大返回数
+     * @param kinds 节点类型过滤（null 表示不过滤）
+     */
+    public List<Node> searchNodes(String query, int limit, String[] kinds) throws SQLException {
+        List<Node> nodes = new ArrayList<>();
+        StringBuilder sql = new StringBuilder(
+            "SELECT * FROM nodes WHERE (LOWER(name) LIKE ? OR LOWER(qualified_name) LIKE ? OR LOWER(docstring) LIKE ?)");
+        if (kinds != null && kinds.length > 0) {
+            sql.append(" AND kind IN (");
+            for (int i = 0; i < kinds.length; i++) {
+                if (i > 0) sql.append(", ");
+                sql.append("?");
+            }
+            sql.append(")");
+        }
+        sql.append(" LIMIT ?");
+
+        String likePattern = "%" + query.toLowerCase() + "%";
+        try (PreparedStatement stmt = db.getConnection().prepareStatement(sql.toString())) {
+            int idx = 1;
+            stmt.setString(idx++, likePattern);
+            stmt.setString(idx++, likePattern);
+            stmt.setString(idx++, likePattern);
+            if (kinds != null) {
+                for (String kind : kinds) {
+                    stmt.setString(idx++, kind);
+                }
+            }
+            stmt.setInt(idx, limit);
+
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                nodes.add(mapResultSetToNode(rs));
+            }
+        }
+        return nodes;
     }
 }

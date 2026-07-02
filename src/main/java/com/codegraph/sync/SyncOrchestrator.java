@@ -164,10 +164,13 @@ public class SyncOrchestrator {
                     // 保存边
                     for (Edge edge : parseResult.getEdges()) {
                         try {
-                            queryBuilder.insertEdge(edge);
+                            if (!queryBuilder.insertEdge(edge)) {
+                                logger.debug("跳过边 (target 不存在): {} -> {}",
+                                        edge.getSource(), edge.getTarget());
+                            }
                         } catch (SQLException e) {
-                            logger.debug("跳过边 (target 不存在): {} -> {}",
-                                    edge.getSource(), edge.getTarget());
+                            logger.debug("跳过边 (异常): {} -> {}, {}",
+                                    edge.getSource(), edge.getTarget(), e.getMessage());
                         }
                     }
 
@@ -210,10 +213,12 @@ public class SyncOrchestrator {
         // 6. 如果有文件变更，执行框架提取
         if (result.getFilesChanged() > 0) {
             runFrameworkExtraction(projectRoot, queryBuilder, currentFiles, result);
+            db.commit();
         }
 
         // 7. Resolution 阶段：解析跨文件引用
         runResolution(projectRoot, queryBuilder);
+        db.commit();
 
         result.setDurationMs(System.currentTimeMillis() - startTime);
         return result;
@@ -293,7 +298,10 @@ public class SyncOrchestrator {
                                 fwMeta.put("provenance", "framework:" + fw.getName());
                                 edge.setMetadata(fwMeta);
                                 try {
-                                    queryBuilder.insertEdge(edge);
+                                    if (!queryBuilder.insertEdge(edge)) {
+                                        logger.debug("跳过框架边 (target 不存在): {} -> {}",
+                                                edge.getSource(), edge.getTarget());
+                                    }
                                 } catch (SQLException e) {
                                     logger.debug("跳过框架边: {}", e.getMessage());
                                 }

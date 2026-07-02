@@ -1,4 +1,4 @@
-package com.codegraph.install;
+package com.codegraph.installer;
 
 import org.junit.AfterClass;
 import org.junit.Before;
