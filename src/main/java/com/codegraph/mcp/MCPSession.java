@@ -158,8 +158,8 @@ public class MCPSession implements MCPTransport.MessageHandler {
         StringBuilder sb = new StringBuilder();
         sb.append("# CodeGraph4j — Semantic Code Knowledge Graph\n\n");
 
-        sb.append("## When to Use CodeGraph\n\n");
-        sb.append("In repositories indexed by CodeGraph ");
+        sb.append("## When to Use CodeGraph4j\n\n");
+        sb.append("In repositories indexed by CodeGraph4j ");
         sb.append("(a `.codegraph/` directory exists at the repo root), ");
         sb.append("reach for it **BEFORE** grep/find or reading files ");
         sb.append("when you need to understand or locate code.\n\n");

@@ -31,6 +31,7 @@ public class MCPServer {
     private static final org.slf4j.Logger logger = LoggerFactory.getLogger(MCPServer.class);
 
     private final String projectPath;
+    private final boolean javaProject;
     private DatabaseConnection db;
     private MCPSession session;
     private MCPToolHandler toolHandler;
@@ -38,7 +39,10 @@ public class MCPServer {
     public MCPServer(String projectPath) {
         this.projectPath = projectPath;
         System.setProperty("codegraph.projectPath", projectPath);
-        setupFileLogging();
+        this.javaProject = ProjectDetector.isJavaProject(projectPath);
+        if (this.javaProject) {
+            setupFileLogging();
+        }
     }
 
     /**

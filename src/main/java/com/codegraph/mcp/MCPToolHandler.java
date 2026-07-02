@@ -27,6 +27,10 @@ public class MCPToolHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(MCPToolHandler.class);
 
+    private static final String NOT_JAVA_MSG =
+        "This project is not a Java project. " +
+        "CodeGraph4j currently only supports Java projects (detected via pom.xml / build.gradle / .java files).";
+
     // 工具白名单（可通过 CODEGRAPH_MCP_TOOLS 环境变量覆盖）
     private static final Set<String> DEFAULT_MCP_TOOLS = new HashSet<>(
         Arrays.asList("explore", "search", "callers", "callees", "impact", "node", "status", "files"));
@@ -43,11 +47,22 @@ public class MCPToolHandler {
     private final DatabaseConnection db;
     private final QueryBuilder queries;
     private final ToolRegistry registry;
+    private final boolean javaProject;
 
     public MCPToolHandler(String projectPath, DatabaseConnection db, QueryBuilder queries) {
+        this(projectPath, db, queries, true);
+    }
+
+    public MCPToolHandler(String projectPath, DatabaseConnection db, QueryBuilder queries, boolean javaProject) {
         this.projectPath = projectPath;
         this.db = db;
         this.queries = queries;
+        this.javaProject = javaProject;
+
+        if (!javaProject) {
+            this.registry = new ToolRegistry();
+            return;
+        }
 
         GraphTraverser traverser = new GraphTraverser(queries);
         GraphQueryManager graphQueryMgr = new GraphQueryManager(queries);
@@ -77,6 +92,9 @@ public class MCPToolHandler {
 
     /** 按工具名分发执行 */
     public ToolCallResult execute(String toolName, Map<String, Object> args) {
+        if (!javaProject) {
+            return error(NOT_JAVA_MSG);
+        }
         try {
             Tool tool = registry.get(toolName);
             if (tool == null) {
