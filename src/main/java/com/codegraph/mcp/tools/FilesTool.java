@@ -1,5 +1,6 @@
 package com.codegraph.mcp.tools;
 
+import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.graph.GraphQueryManager;
@@ -17,8 +18,8 @@ public class FilesTool extends BaseTool {
 
     public FilesTool(DatabaseConnection db, QueryBuilder queries,
                      GraphTraverser traverser, GraphQueryManager graphQueryMgr,
-                     String projectPath) {
-        super(db, queries, traverser, graphQueryMgr, projectPath);
+                     CodeGraphConfig config) {
+        super(db, queries, traverser, graphQueryMgr, config);
     }
 
     @Override

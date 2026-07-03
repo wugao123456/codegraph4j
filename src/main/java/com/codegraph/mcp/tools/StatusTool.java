@@ -1,5 +1,6 @@
 package com.codegraph.mcp.tools;
 
+import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.core.Edge;
 import com.codegraph.core.Node;
 import com.codegraph.db.DatabaseConnection;
@@ -19,8 +20,8 @@ public class StatusTool extends BaseTool {
 
     public StatusTool(DatabaseConnection db, QueryBuilder queries,
                       GraphTraverser traverser, GraphQueryManager graphQueryMgr,
-                      String projectPath) {
-        super(db, queries, traverser, graphQueryMgr, projectPath);
+                      CodeGraphConfig config) {
+        super(db, queries, traverser, graphQueryMgr, config);
     }
 
     @Override
@@ -57,7 +58,7 @@ public class StatusTool extends BaseTool {
 
             StringBuilder sb = new StringBuilder();
             sb.append("=== CodeGraph Status ===\n\n");
-            sb.append(String.format("Database:  %s/.codegraph/codegraph4j.db\n", projectPath));
+            sb.append(String.format("Database:  %s\n", config.getDbFile().getAbsolutePath()));
             sb.append(String.format("Files:     %d\n", fileCount));
             sb.append(String.format("Nodes:     %d\n", nodeCount));
             sb.append(String.format("Edges:     %d\n\n", edgeCount));

@@ -1,5 +1,6 @@
 package com.codegraph.mcp.tools;
 
+import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.core.Node;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
@@ -19,8 +20,8 @@ public class CallersTool extends BaseTool {
 
     public CallersTool(DatabaseConnection db, QueryBuilder queries,
                        GraphTraverser traverser, GraphQueryManager graphQueryMgr,
-                       String projectPath) {
-        super(db, queries, traverser, graphQueryMgr, projectPath);
+                       CodeGraphConfig config) {
+        super(db, queries, traverser, graphQueryMgr, config);
     }
 
     @Override

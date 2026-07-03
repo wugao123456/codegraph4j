@@ -1,5 +1,6 @@
 package com.codegraph.cli.commands;
 
+import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.mcp.MCPServer;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -29,6 +30,10 @@ public class ServeCommand implements Runnable {
     @CommandLine.Option(names = {"--mcp"},
         description = "Run as MCP server (stdio transport)")
     private boolean mcp;
+
+    @CommandLine.Option(names = {"--db-path"},
+        description = "Database directory (default: {project}/.codegraph)")
+    private String dbPath;
 
     @Override
     public void run() {
@@ -64,7 +69,8 @@ public class ServeCommand implements Runnable {
 
         // stdio 模式：移除控制台输出，避免污染 MCP 的 stdio 通道
         // 文件日志已在 MCPServer 构造函数中自动配置
-        MCPServer server = new MCPServer(projectRoot);
+        CodeGraphConfig config = new CodeGraphConfig(projectRoot, dbPath);
+        MCPServer server = new MCPServer(config);
         server.detachConsole();
 
         logger.info("Starting MCP server in stdio mode for project: {}", projectRoot);

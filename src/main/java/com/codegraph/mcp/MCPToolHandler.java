@@ -1,5 +1,6 @@
 package com.codegraph.mcp;
 
+import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.graph.GraphQueryManager;
@@ -43,18 +44,18 @@ public class MCPToolHandler {
         }
     }
 
-    private final String projectPath;
+    private final CodeGraphConfig config;
     private final DatabaseConnection db;
     private final QueryBuilder queries;
     private final ToolRegistry registry;
     private final boolean javaProject;
 
-    public MCPToolHandler(String projectPath, DatabaseConnection db, QueryBuilder queries) {
-        this(projectPath, db, queries, true);
+    public MCPToolHandler(CodeGraphConfig config, DatabaseConnection db, QueryBuilder queries) {
+        this(config, db, queries, true);
     }
 
-    public MCPToolHandler(String projectPath, DatabaseConnection db, QueryBuilder queries, boolean javaProject) {
-        this.projectPath = projectPath;
+    public MCPToolHandler(CodeGraphConfig config, DatabaseConnection db, QueryBuilder queries, boolean javaProject) {
+        this.config = config;
         this.db = db;
         this.queries = queries;
         this.javaProject = javaProject;
@@ -69,14 +70,14 @@ public class MCPToolHandler {
 
         this.registry = new ToolRegistry();
 
-        if (isEnabled("explore")) registry.register(new ExploreTool(db, queries, traverser, graphQueryMgr, projectPath));
-        if (isEnabled("search"))   registry.register(new SearchTool(db, queries, traverser, graphQueryMgr, projectPath));
-        if (isEnabled("callers"))  registry.register(new CallersTool(db, queries, traverser, graphQueryMgr, projectPath));
-        if (isEnabled("callees"))  registry.register(new CalleesTool(db, queries, traverser, graphQueryMgr, projectPath));
-        if (isEnabled("impact"))   registry.register(new ImpactTool(db, queries, traverser, graphQueryMgr, projectPath));
-        if (isEnabled("node"))     registry.register(new NodeTool(db, queries, traverser, graphQueryMgr, projectPath));
-        if (isEnabled("status"))   registry.register(new StatusTool(db, queries, traverser, graphQueryMgr, projectPath));
-        if (isEnabled("files"))    registry.register(new FilesTool(db, queries, traverser, graphQueryMgr, projectPath));
+        if (isEnabled("explore")) registry.register(new ExploreTool(db, queries, traverser, graphQueryMgr, config));
+        if (isEnabled("search"))   registry.register(new SearchTool(db, queries, traverser, graphQueryMgr, config));
+        if (isEnabled("callers"))  registry.register(new CallersTool(db, queries, traverser, graphQueryMgr, config));
+        if (isEnabled("callees"))  registry.register(new CalleesTool(db, queries, traverser, graphQueryMgr, config));
+        if (isEnabled("impact"))   registry.register(new ImpactTool(db, queries, traverser, graphQueryMgr, config));
+        if (isEnabled("node"))     registry.register(new NodeTool(db, queries, traverser, graphQueryMgr, config));
+        if (isEnabled("status"))   registry.register(new StatusTool(db, queries, traverser, graphQueryMgr, config));
+        if (isEnabled("files"))    registry.register(new FilesTool(db, queries, traverser, graphQueryMgr, config));
 
         logger.info("Enabled tools: {} tools", registry.size());
     }

@@ -1,5 +1,6 @@
 package com.codegraph.mcp.tools;
 
+import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.core.Node;
 import com.codegraph.core.types.NodeKind;
 import com.codegraph.db.DatabaseConnection;
@@ -19,8 +20,8 @@ public class SearchTool extends BaseTool {
 
     public SearchTool(DatabaseConnection db, QueryBuilder queries,
                       GraphTraverser traverser, GraphQueryManager graphQueryMgr,
-                      String projectPath) {
-        super(db, queries, traverser, graphQueryMgr, projectPath);
+                      CodeGraphConfig config) {
+        super(db, queries, traverser, graphQueryMgr, config);
     }
 
     @Override

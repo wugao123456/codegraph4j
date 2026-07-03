@@ -5,6 +5,7 @@ import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
 import ch.qos.logback.core.rolling.RollingFileAppender;
 import ch.qos.logback.core.rolling.TimeBasedRollingPolicy;
+import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.mcp.MCPTransport.ToolCallResult;
@@ -30,16 +31,16 @@ public class MCPServer {
 
     private static final org.slf4j.Logger logger = LoggerFactory.getLogger(MCPServer.class);
 
-    private final String projectPath;
+    private final CodeGraphConfig config;
     private final boolean javaProject;
     private DatabaseConnection db;
     private MCPSession session;
     private MCPToolHandler toolHandler;
 
-    public MCPServer(String projectPath) {
-        this.projectPath = projectPath;
-        System.setProperty("codegraph.projectPath", projectPath);
-        this.javaProject = ProjectDetector.isJavaProject(projectPath);
+    public MCPServer(CodeGraphConfig config) {
+        this.config = config;
+        System.setProperty("codegraph.projectPath", config.getProjectPath());
+        this.javaProject = ProjectDetector.isJavaProject(config.getProjectPath());
         if (this.javaProject) {
             setupFileLogging();
         }
@@ -59,7 +60,7 @@ public class MCPServer {
             return;
         }
 
-        File logDir = new File(projectPath, ".codegraph/logs");
+        File logDir = config.getLogDir();
         logDir.mkdirs();
 
         String logPath = new File(logDir, "codegraph4j-mcp.log").getAbsolutePath();
@@ -122,14 +123,14 @@ public class MCPServer {
         logger.info("========================================");
         logger.info("  CodeGraph MCP Server");
         logger.info("  Protocol: JSON-RPC 2.0 (MCP {})", MCPTransport.PROTOCOL_VERSION);
-        logger.info("  Project:  {}", projectPath);
+        logger.info("  Project:  {}", config.getProjectPath());
         logger.info("========================================");
 
         // 解析项目路径
-        File dbFile = new File(projectPath, ".codegraph/codegraph4j.db");
+        File dbFile = config.getDbFile();
         if (!dbFile.exists()) {
             // 尝试在父目录查找
-            File parentDb = new File(new File(projectPath).getParent(), ".codegraph/codegraph4j.db");
+            File parentDb = new File(new File(config.getDbFile().getParent()).getParent(), ".codegraph/codegraph4j.db");
             if (parentDb.exists()) {
                 dbFile = parentDb;
                 logger.info("Found database in parent directory: {}", parentDb.getAbsolutePath());
@@ -147,8 +148,8 @@ public class MCPServer {
                 logger.info("Database opened: {}", dbFile.getAbsolutePath());
 
                 QueryBuilder queries = new QueryBuilder(db);
-                toolHandler = new MCPToolHandler(projectPath, db, queries);
-                session = new MCPSession(projectPath, toolHandler);
+                toolHandler = new MCPToolHandler(config, db, queries);
+                session = new MCPSession(config.getProjectPath(), toolHandler);
                 session.start();
 
                 logger.info("MCP Server ready — waiting for JSON-RPC messages on stdin...");
@@ -159,8 +160,8 @@ public class MCPServer {
             // 无 DB 模式：创建空工具处理器
             logger.warn("No database found — starting in limited mode");
             try {
-                MCPToolHandler toolHandler = new MCPToolHandler(projectPath, null, null);
-                session = new MCPSession(projectPath, toolHandler);
+                MCPToolHandler toolHandler = new MCPToolHandler(config, null, null);
+                session = new MCPSession(config.getProjectPath(), toolHandler);
                 session.start();
             } catch (Exception e) {
                 logger.error("Failed to start MCP server", e);

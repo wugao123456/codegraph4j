@@ -1,5 +1,6 @@
 package com.codegraph.mcp.tools;
 
+import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.core.Node;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
@@ -20,16 +21,16 @@ public abstract class BaseTool implements Tool {
     protected final QueryBuilder queries;
     protected final GraphTraverser traverser;
     protected final GraphQueryManager graphQueryMgr;
-    protected final String projectPath;
+    protected final CodeGraphConfig config;
 
     protected BaseTool(DatabaseConnection db, QueryBuilder queries,
                        GraphTraverser traverser, GraphQueryManager graphQueryMgr,
-                       String projectPath) {
+                       CodeGraphConfig config) {
         this.db = db;
         this.queries = queries;
         this.traverser = traverser;
         this.graphQueryMgr = graphQueryMgr;
-        this.projectPath = projectPath;
+        this.config = config;
     }
 
     // ---- 参数解析 ----

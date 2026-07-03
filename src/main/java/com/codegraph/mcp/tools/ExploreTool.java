@@ -1,5 +1,6 @@
 package com.codegraph.mcp.tools;
 
+import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.context.*;
 import com.codegraph.core.Edge;
 import com.codegraph.core.Node;
@@ -53,8 +54,8 @@ public class ExploreTool extends BaseTool {
 
     public ExploreTool(DatabaseConnection db, QueryBuilder queries,
                        GraphTraverser traverser, GraphQueryManager graphQueryMgr,
-                       String projectPath) {
-        super(db, queries, traverser, graphQueryMgr, projectPath);
+                       CodeGraphConfig config) {
+        super(db, queries, traverser, graphQueryMgr, config);
     }
 
     @Override
@@ -101,10 +102,7 @@ public class ExploreTool extends BaseTool {
             fileCount, maxFiles, budget.maxOutputChars);
 
         ContextBuilder ctxBuilder = new ContextBuilder(queries);
-        ContextBuilder.FindOptions opts = new ContextBuilder.FindOptions();
-        opts.searchLimit = 8;
-        opts.traversalDepth = 3;
-        opts.maxNodes = 200;
+        ContextBuilder.FindOptions opts = config.buildExploreFindOptions();
 
         // Step 2: 混合搜索获取子图
         Subgraph subgraph = ctxBuilder.findRelevantContext(query, opts);
@@ -365,7 +363,7 @@ public class ExploreTool extends BaseTool {
             if (!fileNecessary && totalChars > budget.maxOutputChars * 0.9) continue;
 
             Path absPath = Paths.get(filePath);
-            if (!absPath.isAbsolute()) absPath = Paths.get(projectPath, filePath);
+            if (!absPath.isAbsolute()) absPath = Paths.get(config.getProjectPath(), filePath);
             if (!Files.exists(absPath)) continue;
 
             List<String> fileLines;
@@ -461,7 +459,7 @@ public class ExploreTool extends BaseTool {
         logger.info("[codegraph_explore] 处理完成: query=\"{}\", 输出字符数={}, 文件数={}, 耗时={}ms",
             query, resultText.length(), filesIncluded, elapsed);
         ToolCallResult result = text(resultText);
-        MarkdownUtils.writeMarkdownToFile(result, "codegraph_explore", query, projectPath);
+        MarkdownUtils.writeMarkdownToFile(result, "codegraph_explore", query, config.getProjectPath());
         return result;
     }
 
