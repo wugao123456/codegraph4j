@@ -26,7 +26,7 @@ import java.util.concurrent.*;
  */
 public class MCPSessionSimulator {
 
-    private static final String PROJECT_PATH = "/Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j";
+    private static final String PROJECT_PATH = "/Users/wugao-pc/Desktop/Project/codegraph4j";
     private static final String CLASSPATH;
 
     static {
@@ -58,7 +58,7 @@ public class MCPSessionSimulator {
             }
         }
         if (queries.isEmpty()) {
-            queries.add("MCPServer"); // 默认查询
+            queries.add("MCPServer codegraph_explore"); // 默认查询
         }
 
         System.out.println("╔══════════════════════════════════════════════╗");
@@ -107,7 +107,7 @@ public class MCPSessionSimulator {
 
             String initResponse = readResponse(stdout, 5000);
             System.out.println("<<< initialize 响应 (前100000字符):");
-            System.out.println("    " + truncate(initResponse, 10000));
+            System.out.println("    " + truncate(initResponse, 100000));
             System.out.println();
 
             // ---- 第2步: 发送 initialized 通知 ----

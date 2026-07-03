@@ -608,31 +608,23 @@ public class GraphTraverser {
         public int getEdgeCount() { return edges.size(); }
     }
 
-    /** 调用者信息 */
-    public static class CallerInfo {
-        public final Node node;
-        public final Edge edge;
-        public CallerInfo(Node node, Edge edge) { this.node = node; this.edge = edge; }
+    /** 调用者信息（类型别名，委托给 NodeEdgePair） */
+    public static class CallerInfo extends NodeEdgePair {
+        public CallerInfo(Node node, Edge edge) { super(node, edge); }
     }
 
-    /** 被调用者信息 */
-    public static class CalleeInfo {
-        public final Node node;
-        public final Edge edge;
-        public CalleeInfo(Node node, Edge edge) { this.node = node; this.edge = edge; }
+    /** 被调用者信息（类型别名，委托给 NodeEdgePair） */
+    public static class CalleeInfo extends NodeEdgePair {
+        public CalleeInfo(Node node, Edge edge) { super(node, edge); }
     }
 
-    /** 使用信息 */
-    public static class UsageInfo {
-        public final Node node;
-        public final Edge edge;
-        public UsageInfo(Node node, Edge edge) { this.node = node; this.edge = edge; }
+    /** 使用信息（类型别名，委托给 NodeEdgePair） */
+    public static class UsageInfo extends NodeEdgePair {
+        public UsageInfo(Node node, Edge edge) { super(node, edge); }
     }
 
-    /** 路径步骤 */
-    public static class PathStep {
-        public final Node node;
-        public final Edge edge;
-        public PathStep(Node node, Edge edge) { this.node = node; this.edge = edge; }
+    /** 路径步骤（类型别名，委托给 NodeEdgePair） */
+    public static class PathStep extends NodeEdgePair {
+        public PathStep(Node node, Edge edge) { super(node, edge); }
     }
 }

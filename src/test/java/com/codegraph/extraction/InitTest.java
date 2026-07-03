@@ -15,10 +15,10 @@ public class InitTest {
 
 
     public static void  main(String[] args) {
-        //  args = new String[]{"init","-f","-p","/Users/wugao-pc/Desktop/Project/stream"};
-        //        int exitCode = new CommandLine(new CodeGraphCli()).execute(args);
-               args = new String[]{"index","-p","/Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j","--force"};
-              int exitCode = new CommandLine(new CodeGraphCli()).execute(args);
+         args = new String[]{"init","-f","-p","/Users/wugao-pc/Desktop/Project/codegraph4j"};
+               int exitCode = new CommandLine(new CodeGraphCli()).execute(args);
+               args = new String[]{"index","-p","/Users/wugao-pc/Desktop/Project/codegraph4j","--force"};
+               exitCode = new CommandLine(new CodeGraphCli()).execute(args);
            System.exit(exitCode);
     }
        

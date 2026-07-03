@@ -6,8 +6,10 @@ import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.graph.GraphQueryManager;
 import com.codegraph.graph.GraphTraverser;
+import com.codegraph.graph.NodeEdgePair;
 import com.codegraph.mcp.MCPTransport.ContentItem;
 import com.codegraph.mcp.MCPTransport.ToolCallResult;
+import com.codegraph.utils.StringUtils;
 
 import java.sql.SQLException;
 import java.util.*;
@@ -73,7 +75,7 @@ public abstract class BaseTool implements Tool {
         return result;
     }
 
-    protected static ToolCallResult error(String message) {
+    public static ToolCallResult error(String message) {
         ToolCallResult result = new ToolCallResult();
         result.content.add(new ContentItem(message, true));
         result.isError = true;
@@ -139,13 +141,36 @@ public abstract class BaseTool implements Tool {
     // ---- 字符串工具 ----
 
     protected static String truncate(String s, int maxLen) {
-        if (s == null) return "null";
-        return s.length() <= maxLen ? s : s.substring(0, maxLen) + "...";
+        return StringUtils.truncate(s, maxLen);
     }
 
     protected static String getDirectory(String filePath) {
         if (filePath == null) return ".";
         int lastSep = filePath.lastIndexOf('/');
         return lastSep >= 0 ? filePath.substring(0, lastSep) : ".";
+    }
+
+    /**
+     * 构建调用者/被调用者输出。CallersTool 和 CalleesTool 的共享格式化逻辑。
+     */
+    protected static String formatTraversalResult(String label, Node node,
+                                                   List<? extends NodeEdgePair> list, int limit) {
+        List<? extends NodeEdgePair> resultList = list;
+        if (resultList.size() > limit) resultList = resultList.subList(0, limit);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(label).append(node.getName())
+            .append(" (").append(node.getKind().getValue()).append("):\n\n");
+        if (resultList.isEmpty()) {
+            sb.append("No ").append(label.toLowerCase()).append(" found.\n");
+        } else {
+            for (NodeEdgePair c : resultList) {
+                sb.append(String.format("- %s %s [%s] %s:%d\n",
+                    c.node.getKind().getValue(), c.node.getName(),
+                    truncate(c.node.getId(), 12),
+                    c.node.getFilePath(), c.node.getStartLine()));
+            }
+        }
+        return sb.toString();
     }
 }

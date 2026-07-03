@@ -55,22 +55,7 @@ public class CallersTool extends BaseTool {
             if (node == null) return text("Symbol not found: " + symbol);
 
             List<CallerInfo> callerList = traverser.getCallers(node.getId(), 1);
-            if (callerList.size() > limit) callerList = callerList.subList(0, limit);
-
-            StringBuilder sb = new StringBuilder();
-            sb.append("Callers of ").append(node.getName())
-                .append(" (").append(node.getKind().getValue()).append("):\n\n");
-            if (callerList.isEmpty()) {
-                sb.append("No callers found.\n");
-            } else {
-                for (CallerInfo c : callerList) {
-                    sb.append(String.format("- %s %s [%s] %s:%d\n",
-                        c.node.getKind().getValue(), c.node.getName(),
-                        truncate(c.node.getId(), 12),
-                        c.node.getFilePath(), c.node.getStartLine()));
-                }
-            }
-            return text(sb.toString());
+            return text(formatTraversalResult("Callers of ", node, callerList, limit));
         } catch (SQLException e) {
             return error("Callers lookup failed: " + e.getMessage());
         }

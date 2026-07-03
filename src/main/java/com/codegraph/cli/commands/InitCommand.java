@@ -18,10 +18,8 @@ public class InitCommand implements Runnable {
     
     private static final Logger logger = LoggerFactory.getLogger(InitCommand.class);
     
-    @CommandLine.Option(names = {"-p", "--project"}, 
-        description = "Project root directory", 
-        defaultValue = ".")
-    private String projectRoot;
+    @CommandLine.Mixin
+    private ProjectOption projectOpt = new ProjectOption();
     
     @CommandLine.Option(names = {"-f", "--force"}, 
         description = "Overwrite existing database", 
@@ -30,20 +28,20 @@ public class InitCommand implements Runnable {
 
     @Override
     public void run() {
-        logger.info("Initializing CodeGraph4j for project: {}", projectRoot);
+        logger.info("Initializing CodeGraph4j for project: {}", projectOpt.projectRoot);
         
-        File projectDir = new File(projectRoot);
+        File projectDir = new File(projectOpt.projectRoot);
         
         // 边界检查：项目目录不存在
         if (!projectDir.exists()) {
-            System.err.println("Error: Project directory does not exist: " + projectRoot);
+            System.err.println("Error: Project directory does not exist: " + projectOpt.projectRoot);
             System.exit(1);
             return;
         }
         
         // 边界检查：项目路径不是目录
         if (!projectDir.isDirectory()) {
-            System.err.println("Error: Project path is not a directory: " + projectRoot);
+            System.err.println("Error: Project path is not a directory: " + projectOpt.projectRoot);
             System.exit(1);
             return;
         }

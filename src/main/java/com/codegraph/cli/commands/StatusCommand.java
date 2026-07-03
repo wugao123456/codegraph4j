@@ -17,16 +17,14 @@ public class StatusCommand implements Runnable {
     
     private static final Logger logger = LoggerFactory.getLogger(StatusCommand.class);
     
-    @CommandLine.Option(names = {"-p", "--project"}, 
-        description = "Project root directory", 
-        defaultValue = ".")
-    private String projectRoot;
+    @CommandLine.Mixin
+    private ProjectOption projectOpt = new ProjectOption();
 
     @Override
     public void run() {
-        logger.info("Checking status for project: {}", projectRoot);
+        logger.info("Checking status for project: {}", projectOpt.projectRoot);
         
-        File dbFile = new File(projectRoot, ".codegraph/codegraph4j.db");
+        File dbFile = new File(projectOpt.projectRoot, ".codegraph/codegraph4j.db");
         
         if (!dbFile.exists()) {
             System.out.println("CodeGraph not initialized for this project");
@@ -47,7 +45,7 @@ public class StatusCommand implements Runnable {
             
             System.out.println("CodeGraph Status");
             System.out.println("================");
-            System.out.println("Project: " + projectRoot);
+            System.out.println("Project: " + projectOpt.projectRoot);
             System.out.println("Database: " + dbFile.getAbsolutePath());
             System.out.println("Nodes: " + nodeCount);
             System.out.println("Edges: " + edgeCount);

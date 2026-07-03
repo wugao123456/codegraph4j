@@ -2,6 +2,7 @@ package com.codegraph.cli.commands;
 
 import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.mcp.MCPServer;
+import com.codegraph.utils.AppUtils;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
@@ -22,10 +23,8 @@ public class ServeCommand implements Runnable {
 
     private static final org.slf4j.Logger logger = LoggerFactory.getLogger(ServeCommand.class);
 
-    @CommandLine.Option(names = {"-p", "--project"},
-        description = "Project root directory",
-        defaultValue = ".")
-    private String projectRoot;
+    @CommandLine.Mixin
+    private ProjectOption projectOpt = new ProjectOption();
 
     @CommandLine.Option(names = {"--mcp"},
         description = "Run as MCP server (stdio transport)")
@@ -54,14 +53,14 @@ public class ServeCommand implements Runnable {
             System.out.println();
             System.out.println("MCP client configuration:");
 
-            String jarPath = findJarPath();
+            String jarPath = AppUtils.findJarPath();
             System.out.println();
             System.out.println("  \"codegraph\": {");
             System.out.println("    \"command\": \"java\",");
             System.out.println("    \"args\": [\"-cp\", \"" + jarPath + "\",");
             System.out.println("             \"com.codegraph.cli.CodeGraphCli\",");
             System.out.println("             \"serve\", \"--mcp\",");
-            System.out.println("             \"-p\", \"" + projectRoot + "\"]");
+            System.out.println("             \"-p\", \"" + projectOpt.projectRoot + "\"]");
             System.out.println("  }");
             System.out.println();
             return;
@@ -69,27 +68,12 @@ public class ServeCommand implements Runnable {
 
         // stdio 模式：移除控制台输出，避免污染 MCP 的 stdio 通道
         // 文件日志已在 MCPServer 构造函数中自动配置
-        CodeGraphConfig config = new CodeGraphConfig(projectRoot, dbPath);
+        CodeGraphConfig config = new CodeGraphConfig(projectOpt.projectRoot, dbPath);
         MCPServer server = new MCPServer(config);
         server.detachConsole();
 
-        logger.info("Starting MCP server in stdio mode for project: {}", projectRoot);
+        logger.info("Starting MCP server in stdio mode for project: {}", projectOpt.projectRoot);
 
         server.start();
-    }
-
-
-    private String findJarPath() {
-        // 尝试查找 jar 文件
-        String userDir = System.getProperty("user.dir");
-        java.io.File targetDir = new java.io.File(userDir, "target");
-        if (targetDir.exists()) {
-            java.io.File[] jars = targetDir.listFiles(
-                (dir, name) -> name.endsWith(".jar") && !name.contains("sources") && !name.contains("javadoc"));
-            if (jars != null && jars.length > 0) {
-                return jars[0].getAbsolutePath();
-            }
-        }
-        return "codegraph4j.jar";
     }
 }

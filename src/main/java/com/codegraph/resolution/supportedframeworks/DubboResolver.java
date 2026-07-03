@@ -7,6 +7,7 @@ import com.codegraph.core.types.Visibility;
 import com.codegraph.resolution.ResolutionContext;
 import com.codegraph.resolution.frameworks.FrameworkExtractionResult;
 import com.codegraph.resolution.frameworks.FrameworkResolver;
+import com.codegraph.resolution.frameworks.ResolverUtils;
 import com.codegraph.resolution.frameworks.UnresolvedRef;
 
 import org.slf4j.Logger;
@@ -103,7 +104,7 @@ public class DubboResolver implements FrameworkResolver {
 
     @Override
     public List<Language> getLanguages() {
-        return Arrays.asList(Language.JAVA, Language.KOTLIN);
+        return ResolverUtils.JAVA_KOTLIN_LANGS;
     }
 
     @Override
@@ -178,10 +179,7 @@ public class DubboResolver implements FrameworkResolver {
             // 解析实现的接口名（可能有多个，逗号分隔）
             String[] interfaces = implementsClause.split(",");
             String serviceInterface = interfaces[0].trim();
-            // 只取简单类名
-            if (serviceInterface.contains(".")) {
-                serviceInterface = serviceInterface.substring(serviceInterface.lastIndexOf('.') + 1);
-            }
+            serviceInterface = ResolverUtils.extractSimpleName(serviceInterface);
 
             int classStart = classMatcher.start();
 
@@ -198,7 +196,7 @@ public class DubboResolver implements FrameworkResolver {
                 // 跳过 Object 方法
                 if (isObjectMethod(methodName)) continue;
 
-                int line = getLineNumber(content, methodMatcher.start());
+                int line = ResolverUtils.getLineNumber(content, methodMatcher.start());
 
                 Node routeNode = new Node();
                 routeNode.setKind(NodeKind.ROUTE);
@@ -235,8 +233,6 @@ public class DubboResolver implements FrameworkResolver {
             String fieldName = matcher.group(2);   // 如 userService
             found = true;
 
-            int line = getLineNumber(content, matcher.start());
-
             // 从 DB 获取当前文件中所有已有的 METHOD 节点
             List<Node> fileNodes = context.getNodesInFile(filePath);
             logger.debug("[DubboResolver] 文件 {} 从DB获取到 {} 个节点, 字段={}", filePath, fileNodes.size(), fieldName);
@@ -245,7 +241,7 @@ public class DubboResolver implements FrameworkResolver {
             for (Node node : fileNodes) {
                 if (node.getKind() != NodeKind.METHOD) continue;
 
-                String methodBody = extractMethodBody(content, node.getStartLine());
+                String methodBody = ResolverUtils.extractMethodBody(content, node.getStartLine());
                 if (methodBody != null && methodBody.contains(fieldName + ".")) {
                     UnresolvedRef ref = new UnresolvedRef();
                     ref.setFromNodeId(node.getId());  // 使用 DB 中的真实节点 ID
@@ -310,20 +306,6 @@ public class DubboResolver implements FrameworkResolver {
     }
 
     /**
-     * 提取方法的代码体（从方法声明行开始取 30 行）。
-     */
-    private String extractMethodBody(String content, int methodStartLine) {
-        String[] lines = content.split("\n");
-        if (methodStartLine < 1 || methodStartLine > lines.length) return null;
-
-        StringBuilder body = new StringBuilder();
-        for (int i = methodStartLine - 1; i < Math.min(lines.length, methodStartLine + 30); i++) {
-            body.append(lines[i]).append("\n");
-        }
-        return body.toString();
-    }
-
-    /**
      * 判断是否是 java.lang.Object 的方法。
      */
     private boolean isObjectMethod(String methodName) {
@@ -336,13 +318,5 @@ public class DubboResolver implements FrameworkResolver {
             "notify".equals(methodName) ||
             "notifyAll".equals(methodName) ||
             "wait".equals(methodName);
-    }
-
-    private int getLineNumber(String content, int position) {
-        int line = 1;
-        for (int i = 0; i < position && i < content.length(); i++) {
-            if (content.charAt(i) == '\n') line++;
-        }
-        return line;
     }
 }

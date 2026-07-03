@@ -25,10 +25,8 @@ public class SyncCommand implements Runnable {
 
     private static final Logger logger = LoggerFactory.getLogger(SyncCommand.class);
 
-    @CommandLine.Option(names = {"-p", "--project"},
-            description = "Project root directory",
-            defaultValue = ".")
-    private String projectRoot;
+    @CommandLine.Mixin
+    private ProjectOption projectOpt = new ProjectOption();
 
     @CommandLine.Option(names = {"-q", "--quiet"},
             description = "Quiet mode (for git hook triggers)",
@@ -37,7 +35,7 @@ public class SyncCommand implements Runnable {
 
     @Override
     public void run() {
-        Path projectPath = Paths.get(projectRoot).toAbsolutePath();
+        Path projectPath = Paths.get(projectOpt.projectRoot).toAbsolutePath();
         File dbFile = new File(projectPath.toFile(), ".codegraph/codegraph4j.db");
 
         if (!dbFile.exists()) {

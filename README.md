@@ -52,7 +52,7 @@ CodeGraph4j 是 [codegraph](https://github.com/colbymchenry/codegraph) 的 Java 
 
 - **Java 代码解析** — 基于 Tree-sitter 的高性能 AST 解析器，JNA 桥接原生 C 库
 - **框架感知** — 识别 Spring Boot MVC、Dubbo RPC、OpenFeign 等框架的调用关系
-- **知识图谱** — 构建代码符号间的语义关系（CALLS、INHERITS、IMPLEMENTS、REFERENCES 等 11 种）
+- **知识图谱** — 构建代码符号间的语义关系（CALLS、INHERITS、IMPLEMENTS、REFERENCES 等 12 种）
 - **MCP 工具集** — 8 个 MCP 工具供 AI 助手调用（`codegraph_explore` 为核心）
 - **增量同步** — FileWatcher 自动监听 + Git hooks 备选，索引实时更新
 - **SQLite 本地存储** — FTS5 全文搜索，零外部依赖，数据库路径可自定义
@@ -160,7 +160,7 @@ java -jar codegraph4j.jar uninstall --target all
 
 ```bash
 java -jar codegraph4j.jar init -p <project-path> [options]
-```/Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j
+```
 
 | 选项 | 说明 |
 |------|------|
@@ -249,20 +249,23 @@ java -jar codegraph4j.jar serve --mcp -p <project-path>
 | `-p, --project` | 项目根目录（默认当前目录） |
 | `--mcp` | 以 MCP 模式运行（stdio JSON-RPC 2.0 传输） |
 
+### git-hooks — Git 钩子管理
+
+安装或卸载 Git hooks，在 commit/merge/checkout 时自动触发增量同步。
+
+```bash
+# 安装 git hooks
+java -jar codegraph4j.jar git-hooks install -p /path/to/project
+
+# 卸载 git hooks
+java -jar codegraph4j.jar git-hooks uninstall -p /path/to/project
+```
 
 | 选项 | 说明 |
 |------|------|
-| `-n, --node-id <id>` | 起始节点 ID |
-| `--search <query>` | 按名称搜索起始节点（替代 --node-id） |
-| `-d, --depth <n>` | 遍历深度（默认 3） |
-| `--direction` | 方向：`outgoing`、`incoming`、`both`（默认 outgoing） |
-| `--limit <n>` | 最大访问节点数（默认 100） |
-| `--edge-kinds <kinds>` | 限定边类型，逗号分隔（如 `CALLS,CONTAINS`） |
-| `--callers` | 查找调用者模式 |
-| `--callees` | 查找被调用者模式 |
-| `--impact` | 影响范围分析模式 |
+| `-p, --project` | 项目根目录（默认当前目录） |
 
-```bash
+安装的 hooks：`post-commit`、`post-merge`、`post-checkout`。每次触发时自动运行 `sync -q`（静默模式）。
 
 
 ---
@@ -341,7 +344,7 @@ public class MyBatisResolver implements FrameworkResolver {
 | startLine / endLine | int | 行号范围 |
 | docstring | String | 文档注释 |
 
-**NodeKind 枚举**（22 种）：`FILE`、`MODULE`、`CLASS`、`INTERFACE`、`ENUM`、`METHOD`、`CONSTRUCTOR`、`FIELD`、`PARAMETER`、`VARIABLE`、`CONSTANT`、`IMPORT`、`ROUTE`、`COMPONENT` 等。
+**NodeKind 枚举**（22 种）：`FILE`、`MODULE`、`CLASS`、`STRUCT`、`INTERFACE`、`METHOD`、`FUNCTION`、`FIELD`、`PROPERTY`、`ENUM`、`PARAMETER`、`VARIABLE`、`CONSTANT`、`IMPORT`、`EXPORT`、`ROUTE`、`COMPONENT` 等。
 
 ### Edge（边）
 
@@ -354,7 +357,7 @@ public class MyBatisResolver implements FrameworkResolver {
 | kind | EdgeKind | 关系类型 |
 | provenance | String | 边来源（`parsed` / `heuristic` / `framework`） |
 
-**EdgeKind 枚举**（11 种）：`CONTAINS`、`CALLS`、`IMPORTS`、`IMPLEMENTS`、`EXTENDS`、`OVERRIDES`、`REFERENCES`、`INSTANTIATES`、`RETURNS`、`TYPE_OF`、`DECORATES`。
+**EdgeKind 枚举**（12 种）：`CONTAINS`、`CALLS`、`IMPORTS`、`EXPORTS`、`IMPLEMENTS`、`EXTENDS`、`OVERRIDES`、`REFERENCES`、`INSTANTIATES`、`RETURNS`、`TYPE_OF`、`DECORATES`。
 
 ### FileRecord
 
@@ -368,8 +371,9 @@ public class MyBatisResolver implements FrameworkResolver {
 codegraph4j/
 ├── src/main/java/com/codegraph/
 │   ├── cli/                    # 命令行入口
-│   │   └── commands/           # 8 个子命令：init, index, sync, status,
-│   │                           #            serve, traverse, install, uninstall
+│   │   └── commands/           # 7 个子命令：init, index, status, sync,
+│   │                           #            serve, install, uninstall
+│   ├── config/                  # CodeGraphConfig 配置
 │   ├── core/                   # 核心数据模型（Node, Edge, FileRecord）
 │   │   └── types/              # 枚举：NodeKind, EdgeKind, Language, Visibility
 │   ├── db/                     # 数据库层（SQLite + FTS5）
@@ -377,14 +381,14 @@ codegraph4j/
 │   │   ├── bridge/             # JNA 桥接 Tree-sitter C 库
 │   │   ├── tree_sitter/        # AST 遍历提取器
 │   │   └── languages/          # 语言特定提取器（Java 含 Lombok 支持）
-│   ├── resolution/             # 符号解析
+│   ├── resolution/             # 符号解析（框架解析器 + Import解析 + 名称匹配）
 │   │   ├── frameworks/         # 框架解析器接口与注册中心
 │   │   └── supportedframeworks/ # Spring、Dubbo、OpenFeign 解析器
 │   ├── graph/                  # 图遍历引擎（BFS、调用链、影响范围）
 │   ├── context/                # AI 上下文构建（RWR 相关性、自适应预算）
 │   ├── mcp/                    # MCP 协议实现（JSON-RPC 2.0 + stdio）
 │   ├── sync/                   # 增量同步引擎（FileWatcher + Git hooks）
-│   ├── install/                # AI 助手配置管理
+│   ├── installer/              # AI 助手配置管理
 │   └── utils/                  # 工具类（Mutex、FileLock、LRU Cache）
 ├── src/main/resources/
 │   ├── db/schema.sql           # 数据库 DDL（nodes, edges, files, unresolved_refs）
@@ -408,6 +412,17 @@ codegraph4j/
 | `unresolved_refs` | 未解析的跨文件引用 |
 | `project_metadata` | 项目元数据（框架检测结果等） |
 | `schema_versions` | Schema 版本追踪 |
+
+---
+
+## 环境变量
+
+CodeGraph4j 支持通过环境变量进行运行时配置：
+
+| 变量名 | 说明 | 默认值 |
+|--------|------|--------|
+| `CODEGRAPH_MCP_TOOLS` | 启用的工具列表（逗号分隔），如 `explore,search,callers` | `explore,search,callers,callees,impact,node,status,files` |
+| `CODEGRAPH_EXPLORE_LOG_MAX_FILES` | explore 日志保留的最大文件数 | `10` |
 
 ---
 

@@ -15,6 +15,8 @@ import com.codegraph.graph.GraphTraverser.CallerInfo;
 import com.codegraph.mcp.MCPTransport.ToolCallResult;
 import com.codegraph.mcp.MCPTransport.ToolDefinition;
 import com.codegraph.utils.MarkdownUtils;
+import com.codegraph.utils.StringUtils;
+import com.codegraph.utils.FileFilterUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -290,7 +292,7 @@ public class ExploreTool extends BaseTool {
             if (ah != bh) return bh - ah;
             boolean al = isLowValue(ap), bl = isLowValue(bp);
             if (al != bl) return al ? 1 : -1;
-            boolean ag = isGeneratedFile(ap), bg = isGeneratedFile(bp);
+            boolean ag = FileFilterUtils.isGeneratedFile(ap), bg = FileFilterUtils.isGeneratedFile(bp);
             if (ag != bg) return ag ? 1 : -1;
             if (a.getValue().score != b.getValue().score) return b.getValue().score - a.getValue().score;
             return b.getValue().nodes.size() - a.getValue().nodes.size();
@@ -299,7 +301,7 @@ public class ExploreTool extends BaseTool {
 
         // Step 8: 构建输出段落
         List<String> lines = new ArrayList<>();
-        lines.add("**Exploration: " + escape(query) + "**");
+        lines.add("**Exploration: " + StringUtils.escapeMarkdown(query) + "**");
         lines.add("");
         lines.add("Found " + subgraph.nodes.size() + " symbols across " + fileGroups.size() + " files.");
         lines.add("");
@@ -469,10 +471,6 @@ public class ExploreTool extends BaseTool {
         return Math.max(lo, Math.min(hi, val));
     }
 
-    private static String escape(String s) {
-        return s != null ? s.replace("`", "\\`").replace("*", "\\*") : "";
-    }
-
     private static String joinStrings(List<String> lines) {
         StringBuilder sb = new StringBuilder();
         for (String l : lines) sb.append(l).append("\n");
@@ -574,16 +572,6 @@ public class ExploreTool extends BaseTool {
             || path.endsWith("_test.java") || path.endsWith("_spec.java")
             || path.endsWith("_tests.java") || path.endsWith("_test.kt")
             || path.endsWith("_spec.kt") || lp.contains("/icons/") || lp.contains("/i18n/");
-    }
-
-    private static boolean isGeneratedFile(String path) {
-        if (path == null) return false;
-        String lp = path.toLowerCase();
-        return lp.contains(".pb.") || lp.endsWith(".pulsar.go")
-            || lp.endsWith("_mocks.go") || lp.endsWith("_mock.go")
-            || lp.contains("/generated/") || lp.contains("/generated_src/")
-            || lp.endsWith("_generated.java") || lp.endsWith("_generated.kt")
-            || lp.contains("generated_") && (lp.endsWith(".java") || lp.endsWith(".kt"));
     }
 
     private boolean isPolymorphicSibling(List<Node> nodes, Map<String, Boolean> cache, int minSiblings) {

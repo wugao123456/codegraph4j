@@ -1,5 +1,6 @@
 package com.codegraph.sync;
 
+import com.codegraph.utils.FileFilterUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -274,7 +275,7 @@ public class FileWatcher {
                     continue;
                 }
 
-                if (isSourceFile(relStr)) {
+                if (FileFilterUtils.isSourceFile(relStr)) {
                     handleChange(relStr);
                 }
             }
@@ -426,16 +427,6 @@ public class FileWatcher {
                 "target".equals(top) ||
                 "build".equals(top) ||
                 "dist".equals(top);
-    }
-
-    private boolean isSourceFile(String filePath) {
-        String lower = filePath.toLowerCase();
-        return lower.endsWith(".java") ||
-                lower.endsWith(".js") ||
-                lower.endsWith(".jsx") ||
-                lower.endsWith(".ts") ||
-                lower.endsWith(".tsx") ||
-                lower.endsWith(".mjs");
     }
 
     private boolean isRecursivePlatform() {

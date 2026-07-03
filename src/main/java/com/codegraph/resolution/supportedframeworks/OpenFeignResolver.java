@@ -9,6 +9,7 @@ import com.codegraph.core.types.Visibility;
 import com.codegraph.resolution.ResolutionContext;
 import com.codegraph.resolution.frameworks.FrameworkExtractionResult;
 import com.codegraph.resolution.frameworks.FrameworkResolver;
+import com.codegraph.resolution.frameworks.ResolverUtils;
 import com.codegraph.resolution.frameworks.UnresolvedRef;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -106,7 +107,7 @@ public class OpenFeignResolver implements FrameworkResolver {
 
     @Override
     public List<Language> getLanguages() {
-        return Arrays.asList(Language.JAVA, Language.KOTLIN);
+        return ResolverUtils.JAVA_KOTLIN_LANGS;
     }
 
     @Override
@@ -181,7 +182,7 @@ public class OpenFeignResolver implements FrameworkResolver {
             String fieldType = matcher.group(1);   // 如 UserClient
             String fieldName = matcher.group(2);   // 如 userClient
 
-            int line = getLineNumber(content, matcher.start());
+            int line = ResolverUtils.getLineNumber(content, matcher.start());
             logger.info("[OpenFeignResolver] 发现 @Autowired 字段: type={}, name={}, file={}, line={}",
                 fieldType, fieldName, filePath, line);
 
@@ -204,7 +205,7 @@ public class OpenFeignResolver implements FrameworkResolver {
             for (Node node : fileNodes) {
                 if (node.getKind() != NodeKind.METHOD) continue;
 
-                String methodBody = extractMethodBody(content, node.getStartLine());
+                String methodBody = ResolverUtils.extractMethodBody(content, node.getStartLine());
                 if (methodBody != null && methodBody.contains(fieldName + ".")) {
                     // 从方法体中提取被调用的具体方法名
                     String calledMethod = extractCalledMethod(methodBody, fieldName);
@@ -489,7 +490,7 @@ public class OpenFeignResolver implements FrameworkResolver {
                 String fullPath = basePath + methodPath;
 
                 int pos = methodMatcher.start();
-                int line = getLineNumber(content, pos);
+                int line = ResolverUtils.getLineNumber(content, pos);
 
                 Node routeNode = new Node();
                 routeNode.setKind(NodeKind.ROUTE);
@@ -548,7 +549,7 @@ public class OpenFeignResolver implements FrameworkResolver {
             String methodName = matcher.group(1);
             if ("interface".equals(methodName)) continue; // 跳过 interface 关键字
 
-            int line = getLineNumber(content, matcher.start());
+            int line = ResolverUtils.getLineNumber(content, matcher.start());
 
             Node routeNode = new Node();
             routeNode.setKind(NodeKind.ROUTE);
@@ -587,7 +588,7 @@ public class OpenFeignResolver implements FrameworkResolver {
             found = true;
 
             int pos = matcher.start();
-            int line = getLineNumber(content, pos);
+            int line = ResolverUtils.getLineNumber(content, pos);
 
             // 验证该字段类型是否确实是 @FeignClient 接口
             // 策略：有 import 声明 或 同包下的 @FeignClient 接口 或 类型名以 Client 结尾
@@ -609,7 +610,7 @@ public class OpenFeignResolver implements FrameworkResolver {
                 if (node.getKind() != NodeKind.METHOD) continue;
 
                 // 检查该方法体内是否引用了该 Feign 字段
-                String methodBody = extractMethodBody(content, node.getStartLine());
+                String methodBody = ResolverUtils.extractMethodBody(content, node.getStartLine());
                 if (methodBody != null && methodBody.contains(fieldName + ".")) {
                     UnresolvedRef ref = new UnresolvedRef();
                     ref.setFromNodeId(node.getId());  // 使用 DB 中的真实节点 ID
@@ -651,20 +652,6 @@ public class OpenFeignResolver implements FrameworkResolver {
             "import\\s+[\\w.]+\\." + Pattern.quote(typeName) + "\\s*;"
         );
         return p.matcher(content).find();
-    }
-
-    /**
-     * 从文件内容中提取指定方法所在行的代码片段（方法体）。
-     */
-    private String extractMethodBody(String content, int methodStartLine) {
-        String[] lines = content.split("\n");
-        if (methodStartLine < 1 || methodStartLine > lines.length) return null;
-
-        StringBuilder body = new StringBuilder();
-        for (int i = methodStartLine - 1; i < Math.min(lines.length, methodStartLine + 30); i++) {
-            body.append(lines[i]).append("\n");
-        }
-        return body.toString();
     }
 
     /**
@@ -737,13 +724,5 @@ public class OpenFeignResolver implements FrameworkResolver {
 
         logger.warn("[OpenFeignResolver] 未解析到 Feign 引用: {}", refName);
         return null;
-    }
-
-    private int getLineNumber(String content, int position) {
-        int line = 1;
-        for (int i = 0; i < position && i < content.length(); i++) {
-            if (content.charAt(i) == '\n') line++;
-        }
-        return line;
     }
 }

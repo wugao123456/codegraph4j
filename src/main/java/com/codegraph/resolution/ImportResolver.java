@@ -4,6 +4,7 @@ import com.codegraph.core.Node;
 import com.codegraph.core.types.EdgeKind;
 import com.codegraph.core.types.NodeKind;
 import com.codegraph.db.QueryBuilder;
+import com.codegraph.resolution.frameworks.ResolverUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -91,7 +92,7 @@ public class ImportResolver {
                 String importName = node.getName();
                 if (importName != null) {
                     // 检查简单名是否匹配
-                    String simpleName = extractSimpleName(importName);
+                    String simpleName = ResolverUtils.extractSimpleName(importName);
                     if (refName.equals(simpleName)) {
                         result.add(importName);
                     }
@@ -108,11 +109,5 @@ public class ImportResolver {
         }
 
         return result;
-    }
-
-    private String extractSimpleName(String qualifiedName) {
-        if (qualifiedName == null) return null;
-        int lastDot = qualifiedName.lastIndexOf('.');
-        return lastDot >= 0 ? qualifiedName.substring(lastDot + 1) : qualifiedName;
     }
 }

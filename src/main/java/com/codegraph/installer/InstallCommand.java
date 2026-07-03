@@ -6,6 +6,8 @@ import java.nio.file.*;
 import java.util.*;
 
 import com.codegraph.installer.target.*;
+import com.codegraph.cli.commands.ProjectOption;
+import com.codegraph.utils.AppUtils;
 
 /**
  * install   —   CodeGraph MCP        AI    。
@@ -25,9 +27,8 @@ public class InstallCommand implements Runnable {
             description = "Install globally (user-wide config)")
     private boolean globalInstall;
 
-    @CommandLine.Option(names = {"-p", "--project"}, defaultValue = ".",
-            description = "Project root directory")
-    private String projectRoot;
+    @CommandLine.Mixin
+    private ProjectOption projectOpt = new ProjectOption();
 
     @CommandLine.Option(names = {"--print-config"}, defaultValue = "false",
             description = "Print config paths and status without making changes")
@@ -35,7 +36,7 @@ public class InstallCommand implements Runnable {
 
     @Override
     public void run() {
-        Path projectPath = Paths.get(projectRoot).toAbsolutePath().normalize();
+        Path projectPath = Paths.get(projectOpt.projectRoot).toAbsolutePath().normalize();
         Location loc = globalInstall ? Location.GLOBAL : Location.LOCAL;
 
         List<AgentTarget> targets;
@@ -80,7 +81,7 @@ public class InstallCommand implements Runnable {
             return;
         }
 
-        String jarPath = findJarPath();
+        String jarPath = AppUtils.findJarPath();
 
         System.out.println("CodeGraph Installer");
         System.out.println("  Location: " + loc);
@@ -108,23 +109,6 @@ public class InstallCommand implements Runnable {
      * 查找 shaded JAR 文件路径。排除 original、sources、javadoc。
      */
     public static String findJarPath() {
-        String userDir = System.getProperty("user.dir");
-        Path targetDir = Paths.get(userDir, "target");
-        if (Files.isDirectory(targetDir)) {
-            try (DirectoryStream<Path> stream =
-                         Files.newDirectoryStream(targetDir, "*.jar")) {
-                for (Path jar : stream) {
-                    String name = jar.getFileName().toString();
-                    if (!name.contains("sources")
-                            && !name.contains("javadoc")
-                            && !name.contains("original")) {
-                        return jar.toAbsolutePath().toString();
-                    }
-                }
-            } catch (Exception ignored) {
-                // ignore
-            }
-        }
-        return "codegraph4j.jar";
+        return AppUtils.findJarPath();
     }
 }

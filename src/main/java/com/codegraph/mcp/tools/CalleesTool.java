@@ -55,22 +55,7 @@ public class CalleesTool extends BaseTool {
             if (node == null) return text("Symbol not found: " + symbol);
 
             List<CalleeInfo> calleeList = traverser.getCallees(node.getId(), 1);
-            if (calleeList.size() > limit) calleeList = calleeList.subList(0, limit);
-
-            StringBuilder sb = new StringBuilder();
-            sb.append("Callees of ").append(node.getName())
-                .append(" (").append(node.getKind().getValue()).append("):\n\n");
-            if (calleeList.isEmpty()) {
-                sb.append("No callees found.\n");
-            } else {
-                for (CalleeInfo c : calleeList) {
-                    sb.append(String.format("- %s %s [%s] %s:%d\n",
-                        c.node.getKind().getValue(), c.node.getName(),
-                        truncate(c.node.getId(), 12),
-                        c.node.getFilePath(), c.node.getStartLine()));
-                }
-            }
-            return text(sb.toString());
+            return text(formatTraversalResult("Callees of ", node, calleeList, limit));
         } catch (SQLException e) {
             return error("Callees lookup failed: " + e.getMessage());
         }

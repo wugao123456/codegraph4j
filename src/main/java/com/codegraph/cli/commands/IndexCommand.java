@@ -24,10 +24,8 @@ public class IndexCommand implements Runnable {
     
     private static final Logger logger = LoggerFactory.getLogger(IndexCommand.class);
     
-    @CommandLine.Option(names = {"-p", "--project"}, 
-        description = "Project root directory", 
-        defaultValue = ".")
-    private String projectRoot;
+    @CommandLine.Mixin
+    private ProjectOption projectOpt = new ProjectOption();
     
     @CommandLine.Option(names = {"--force"}, 
         description = "Force re-index all files", 
@@ -42,10 +40,10 @@ public class IndexCommand implements Runnable {
     @Override
     public void run() {
         logger.info("========== 开始索引流程 ==========");
-        logger.info("项目路径: {}", projectRoot);
+        logger.info("项目路径: {}", projectOpt.projectRoot);
         logger.info("强制重新索引: {}, 监听模式: {}", force, watch);
         
-        Path projectPath = Paths.get(projectRoot).toAbsolutePath();
+        Path projectPath = Paths.get(projectOpt.projectRoot).toAbsolutePath();
         File dbFile = new File(projectPath.toFile(), ".codegraph/codegraph4j.db");
         
         logger.info("数据库文件: {}", dbFile.getAbsolutePath());

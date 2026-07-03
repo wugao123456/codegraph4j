@@ -4,6 +4,7 @@ import com.codegraph.cli.CodeGraphCli;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.db.SchemaManager;
+import com.codegraph.utils.FileFilterUtils;
 import com.codegraph.core.FileRecord;
 import com.codegraph.core.types.Language;
 import org.junit.After;
@@ -90,34 +91,38 @@ public class SyncOrchestratorUnitTest {
 
     // ==================== isCodeFile ====================
 
+    private boolean isCodeFile(Path p) {
+        return FileFilterUtils.isSourceFile(p.toString());
+    }
+
     @Test
     public void testIsCodeFile_supportedExtensions() {
-        assertTrue(orchestrator.isCodeFile(tempDir.resolve("Foo.java")));
-        assertTrue(orchestrator.isCodeFile(tempDir.resolve("bar.js")));
-        assertTrue(orchestrator.isCodeFile(tempDir.resolve("baz.jsx")));
-        assertTrue(orchestrator.isCodeFile(tempDir.resolve("app.ts")));
-        assertTrue(orchestrator.isCodeFile(tempDir.resolve("app.tsx")));
-        assertTrue(orchestrator.isCodeFile(tempDir.resolve("lib.mjs")));
+        assertTrue(isCodeFile(tempDir.resolve("Foo.java")));
+        assertTrue(isCodeFile(tempDir.resolve("bar.js")));
+        assertTrue(isCodeFile(tempDir.resolve("baz.jsx")));
+        assertTrue(isCodeFile(tempDir.resolve("app.ts")));
+        assertTrue(isCodeFile(tempDir.resolve("app.tsx")));
+        assertTrue(isCodeFile(tempDir.resolve("lib.mjs")));
         // 大小写不敏感
-        assertTrue(orchestrator.isCodeFile(tempDir.resolve("Foo.JAVA")));
-        assertTrue(orchestrator.isCodeFile(tempDir.resolve("App.TS")));
+        assertTrue(isCodeFile(tempDir.resolve("Foo.JAVA")));
+        assertTrue(isCodeFile(tempDir.resolve("App.TS")));
     }
 
     @Test
     public void testIsCodeFile_unsupportedExtensions() {
-        assertFalse(orchestrator.isCodeFile(tempDir.resolve("readme.md")));
-        assertFalse(orchestrator.isCodeFile(tempDir.resolve("pom.xml")));
-        assertFalse(orchestrator.isCodeFile(tempDir.resolve("test.py")));
-        assertFalse(orchestrator.isCodeFile(tempDir.resolve("Dockerfile")));
-        assertFalse(orchestrator.isCodeFile(tempDir.resolve("test.go")));
-        assertFalse(orchestrator.isCodeFile(tempDir.resolve(".gitignore")));
+        assertFalse(isCodeFile(tempDir.resolve("readme.md")));
+        assertFalse(isCodeFile(tempDir.resolve("pom.xml")));
+        assertFalse(isCodeFile(tempDir.resolve("test.py")));
+        assertFalse(isCodeFile(tempDir.resolve("Dockerfile")));
+        assertFalse(isCodeFile(tempDir.resolve("test.go")));
+        assertFalse(isCodeFile(tempDir.resolve(".gitignore")));
     }
 
     @Test
     public void testIsCodeFile_directoryIsFalse() throws Exception {
         Path dir = tempDir.resolve("src");
         Files.createDirectories(dir);
-        assertFalse(orchestrator.isCodeFile(dir));
+        assertFalse(isCodeFile(dir));
     }
 
     // ==================== isNotExcluded ====================

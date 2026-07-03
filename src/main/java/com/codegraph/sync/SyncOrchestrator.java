@@ -13,6 +13,7 @@ import com.codegraph.resolution.ResolutionContext;
 import com.codegraph.resolution.frameworks.FrameworkExtractionResult;
 import com.codegraph.resolution.frameworks.FrameworkRegistry;
 import com.codegraph.resolution.frameworks.FrameworkResolver;
+import com.codegraph.utils.FileFilterUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -350,7 +351,7 @@ public class SyncOrchestrator {
                     if (line.length() < 4) continue;
                     // git status --porcelain 格式: "XY filename"
                     String filePath = line.substring(3).trim();
-                    if (isSourceFile(filePath)) {
+                    if (FileFilterUtils.isSourceFile(filePath)) {
                         changedFiles.add(filePath);
                     }
                 }
@@ -392,32 +393,9 @@ public class SyncOrchestrator {
     public List<Path> findCodeFiles(Path projectPath) throws IOException {
         return Files.walk(projectPath)
                 .filter(Files::isRegularFile)
-                .filter(this::isCodeFile)
+                .filter(p -> FileFilterUtils.isSourceFile(p.toString()))
                 .filter(this::isNotExcluded)
                 .collect(Collectors.toList());
-    }
-
-    /**
-     * 判断是否为支持解析的代码文件。
-     */
-    public boolean isCodeFile(Path path) {
-        String fileName = path.toString().toLowerCase();
-        return fileName.endsWith(".java") ||
-                fileName.endsWith(".js") ||
-                fileName.endsWith(".jsx") ||
-                fileName.endsWith(".ts") ||
-                fileName.endsWith(".tsx") ||
-                fileName.endsWith(".mjs");
-    }
-
-    private boolean isSourceFile(String filePath) {
-        String lower = filePath.toLowerCase();
-        return lower.endsWith(".java") ||
-                lower.endsWith(".js") ||
-                lower.endsWith(".jsx") ||
-                lower.endsWith(".ts") ||
-                lower.endsWith(".tsx") ||
-                lower.endsWith(".mjs");
     }
 
     /**

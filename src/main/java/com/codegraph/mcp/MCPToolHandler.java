@@ -113,9 +113,6 @@ public class MCPToolHandler {
     }
 
     private static ToolCallResult error(String message) {
-        ToolCallResult result = new ToolCallResult();
-        result.content.add(new MCPTransport.ContentItem(message, true));
-        result.isError = true;
-        return result;
+        return BaseTool.error(message);
     }
 }

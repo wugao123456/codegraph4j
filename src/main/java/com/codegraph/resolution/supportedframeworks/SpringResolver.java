@@ -7,11 +7,11 @@ import com.codegraph.core.types.Visibility;
 import com.codegraph.resolution.ResolutionContext;
 import com.codegraph.resolution.frameworks.FrameworkExtractionResult;
 import com.codegraph.resolution.frameworks.FrameworkResolver;
+import com.codegraph.resolution.frameworks.ResolverUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -56,7 +56,7 @@ public class SpringResolver implements FrameworkResolver {
 
     @Override
     public List<Language> getLanguages() {
-        return Arrays.asList(Language.JAVA, Language.KOTLIN);
+        return ResolverUtils.JAVA_KOTLIN_LANGS;
     }
 
     @Override
@@ -112,7 +112,7 @@ public class SpringResolver implements FrameworkResolver {
             String path = matcher.group(2);
 
             int pos = matcher.start();
-            int line = getLineNumber(content, pos);
+            int line = ResolverUtils.getLineNumber(content, pos);
 
             Node routeNode = new Node();
             routeNode.setKind(NodeKind.ROUTE);
@@ -137,7 +137,7 @@ public class SpringResolver implements FrameworkResolver {
         while (matcher.find()) {
             String configKey = matcher.group(1);
             int pos = matcher.start();
-            int line = getLineNumber(content, pos);
+            int line = ResolverUtils.getLineNumber(content, pos);
 
             Node configNode = new Node();
             configNode.setKind(NodeKind.CONSTANT);
@@ -160,7 +160,7 @@ public class SpringResolver implements FrameworkResolver {
 
         // 1. XxxService → 查找 *Service.java 文件中的节点
         if (refName.endsWith("Service")) {
-            String simpleName = extractSimpleName(refName);
+            String simpleName = ResolverUtils.extractSimpleName(refName);
             List<Node> candidates = context.getNodesByName(simpleName);
             for (Node candidate : candidates) {
                 if (candidate.getFilePath().contains("/service/") ||
@@ -173,7 +173,7 @@ public class SpringResolver implements FrameworkResolver {
 
         // 2. XxxController → 查找 *Controller.java 文件中的节点
         if (refName.endsWith("Controller")) {
-            String simpleName = extractSimpleName(refName);
+            String simpleName = ResolverUtils.extractSimpleName(refName);
             List<Node> candidates = context.getNodesByName(simpleName);
             for (Node candidate : candidates) {
                 if (candidate.getFilePath().contains("/controller/")) {
@@ -185,7 +185,7 @@ public class SpringResolver implements FrameworkResolver {
 
         // 3. XxxRepository → 查找 *Repository.java 文件中的节点
         if (refName.endsWith("Repository")) {
-            String simpleName = extractSimpleName(refName);
+            String simpleName = ResolverUtils.extractSimpleName(refName);
             List<Node> candidates = context.getNodesByName(simpleName);
             for (Node candidate : candidates) {
                 if (candidate.getFilePath().contains("/repository/") ||
@@ -197,18 +197,5 @@ public class SpringResolver implements FrameworkResolver {
         }
 
         return null;
-    }
-
-    private String extractSimpleName(String qualifiedName) {
-        int lastDot = qualifiedName.lastIndexOf('.');
-        return lastDot >= 0 ? qualifiedName.substring(lastDot + 1) : qualifiedName;
-    }
-
-    private int getLineNumber(String content, int position) {
-        int line = 1;
-        for (int i = 0; i < position && i < content.length(); i++) {
-            if (content.charAt(i) == '\n') line++;
-        }
-        return line;
     }
 }
