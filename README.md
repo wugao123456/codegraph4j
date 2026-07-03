@@ -36,7 +36,7 @@ CodeGraph4j 是 [codegraph](https://github.com/colbymchenry/codegraph) 的 Java 
 | **框架感知** | 通用语言解析 | **深度 Java 框架感知**：Spring Boot、Dubbo、OpenFeign |
 | **AI 工具** | Claude、Cursor、Codex、opencode 等 8 个 | Claude、Cursor、**Trae**（对中文 IDE 更友好） |
 | **分发方式** | npm / 独立二进制 | **Maven / Fat JAR**（`java -jar` 一键运行） |
-| **微服务支持** | 单项目索引 | **自定义数据库路径**，天然支持多项目隔离索引 |
+| **微服务支持** | 单项目索引 | **自定义数据库路径**，天然支持多根项目独立索引 |
 | **代码解析** | Tree-sitter | **Tree-sitter（JNA 桥接）**，同等级别的 AST 解析 |
 
 **适用场景**：
@@ -428,13 +428,13 @@ CodeGraph4j 支持通过环境变量进行运行时配置：
 
 ## 微服务多项目支持
 
-在多项目微服务架构中，每个子项目可独立初始化自己的 `.codegraph/codegraph4j.db`：
+在多项目微服务架构中，每个根项目可独立初始化自己的 `.codegraph/codegraph4j.db`：
 
 ```bash
-# 为每个微服务独立索引
-java -jar codegraph4j.jar init -p /workspace/order-service
-java -jar codegraph4j.jar init -p /workspace/user-service
-java -jar codegraph4j.jar init -p /workspace/gateway-service
+# 为根项目独立索引
+java -jar codegraph4j.jar init -p /workspace/
+配置数据库路径为 `/workspace/.codegraph/codegraph4j.db`
+
 ```
 
 框架解析器（Dubbo、OpenFeign）自动追踪跨服务的 RPC 调用关系，在各自的数据库中建立引用节点。
@@ -449,12 +449,8 @@ java -jar codegraph4j.jar init -p /workspace/gateway-service
 |------|------|---------------|
 | **MyBatis** | ORM 框架 | Mapper XML → DAO 方法的 SQL 映射关系 |
 | **gRPC** | RPC | `@GrpcService` → proto 定义的双向引用 |
-| **Motan** | RPC | 对标 Dubbo 的 provider/consumer 解析 |
-| **Quarkus** | 云原生 | JAX-RS 路由、CDI 注入关系 |
 
-### 多项目联合图谱
 
-跨仓库调用链路追踪、微服务拓扑图，在多个 `.codegraph/` 数据库间建立联合索引。
 
 ### 更多 AI 工具支持
 
@@ -464,6 +460,9 @@ java -jar codegraph4j.jar init -p /workspace/gateway-service
 
 - 大项目（10 万+ 文件）增量索引性能优化
 - 解析结果缓存（避免重复解析未变更文件）
+- 多个插件支持（vscode、idea 插件等）
+
+
 
 ---
 
