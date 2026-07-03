@@ -48,6 +48,9 @@ public class SyncOrchestrator {
         this.excludePatterns = new ArrayList<>();
         this.excludePatterns.add(".git");
         this.excludePatterns.add(".codegraph");
+        this.excludePatterns.add(".idea");
+        this.excludePatterns.add(".vscode");
+        this.excludePatterns.add(".trae");
         this.excludePatterns.add("node_modules");
         this.excludePatterns.add("target");
         this.excludePatterns.add("build");
