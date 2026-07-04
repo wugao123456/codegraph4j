@@ -36,7 +36,7 @@ public class MCPToolHandler {
 
     // 工具白名单（可通过 CODEGRAPH_MCP_TOOLS 环境变量覆盖）
     private static final Set<String> DEFAULT_MCP_TOOLS = new HashSet<>(
-        Arrays.asList("explore", "search", "callers", "callees", "impact", "node", "status", "files"));
+        Arrays.asList("explore"));
 
     static {
         String env = System.getenv("CODEGRAPH_MCP_TOOLS");

@@ -179,7 +179,7 @@ public class MCPTransport {
     }
 
     public static class ServerInfo {
-        public String name = "codegraph";
+        public String name = "codegraph4j";
         public String version = "1.0.0-SNAPSHOT";
     }
 

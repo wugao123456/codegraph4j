@@ -72,24 +72,34 @@ public class ExploreTool extends BaseTool {
         Map<String, Object> props = new LinkedHashMap<>();
         Map<String, Object> queryProp = new LinkedHashMap<>();
         queryProp.put("type", "string");
-        queryProp.put("description", "Symbol names, file names, or short code terms to explore (e.g., \"AuthService loginUser session-manager\", \"GraphTraverser BFS impact traversal.ts\"). For a flow question, name the symbols spanning the flow (e.g. \"mutateElement renderScene\"). A natural-language question works too — no prior codegraph_search needed.");
+        queryProp.put("description", "Symbol names, file names, or short code terms to explore (e.g., \"AuthService loginUser session-manager\", \"GraphTraverser BFS impact traversal.java\"). For a flow question, name the symbols spanning the flow (e.g. \"mutateElement renderScene\"). A natural-language question works too — no prior codegraph_search needed.");
+        // 符号名称、文件名或简短代码术语（例如："AuthService loginUser session-manager"、"GraphTraverser BFS impact traversal.java"）。
+        // 对于流程问题，命名跨越流程的符号（例如 "mutateElement renderScene"）。
+        // 自然语言问题也可以 —— 不需要事先调用 codegraph_search。
         props.put("query", queryProp);
         
         Map<String, Object> maxFilesProp = new LinkedHashMap<>();
         maxFilesProp.put("type", "number");
         maxFilesProp.put("description", "Maximum number of files to include source code from (default: 12)");
+        // 要包含源代码的最大文件数（默认值：12）
         maxFilesProp.put("default", 12);
         props.put("maxFiles", maxFilesProp);
         
         Map<String, Object> projectPathProp = new LinkedHashMap<>();
         projectPathProp.put("type", "string");
-        projectPathProp.put("description", "Absolute path to the project to query (or any directory inside it) — codegraph uses the nearest .codegraph/ index at or above that path. Omit to use this session's default project. Pass it to query a second codebase, or when the server root has no index of its own (e.g. a monorepo where only sub-projects are indexed, so there is no default project).");
+        projectPathProp.put("description", "Absolute path to the project to query (or any directory inside it) — codegraph4j uses the nearest .codegraph/ index at or above that path. Omit to use this session's default project. Pass it to query a second codebase, or when the server root has no index of its own (e.g. a monorepo where only sub-projects are indexed, so there is no default project).");
+        // 要查询的项目的绝对路径（或其中的任何目录）—— codegraph4j 使用该路径或其上方最近的 .codegraph/ 索引。
+        // 省略则使用本会话的默认项目。当需要查询第二个代码库，或服务器根目录没有自己的索引时（例如 monorepo 中只有子项目被索引），传入此参数。
         props.put("projectPath", projectPathProp);
         
         schema.put("properties", props);
         schema.put("required", Arrays.asList("query"));
         return new ToolDefinition("codegraph_explore",
             "PRIMARY TOOL — call FIRST for almost any question OR before an edit: how does X work, architecture, a bug, where/what is X, surveying an area, or the symbols you are about to change. Returns the verbatim source of the relevant symbols grouped by file in ONE capped call (Read-equivalent — treat the shown source as already Read; do NOT re-open those files), plus the call path among them. Query can be a natural-language question OR a bag of symbol/file names. Usually the ONLY call you need — more accurate context, in far fewer tokens and round-trips than a search/Read/Grep loop.",
+            // 主要工具 —— 几乎所有问题或编辑前都应首先调用：X 如何工作、架构、Bug、X 在哪里/是什么、调查某个区域，或您即将更改的符号。
+            // 在一次受限调用中返回按文件分组的相关符号的逐字源代码（等同于 Read —— 将显示的源代码视为已读取；不要重新打开这些文件），
+            // 以及它们之间的调用路径。查询可以是自然语言问题或一组符号/文件名。通常这是您唯一需要的调用 —— 比搜索/读取/Grep 循环更准确的上下文，
+            // 且消耗更少的 token 和往返次数。
             schema);
     }
 

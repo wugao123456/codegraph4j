@@ -110,10 +110,16 @@ public class MCPSessionSimulator {
             System.out.println("    " + truncate(initResponse, 100000));
             System.out.println();
 
-            // ---- 第2步: 发送 initialized 通知 ----
-            stdin.write("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}");
+            // ---- 第2步: 发送 tools/list ----
+            System.out.println(">>> [2/3] 发送 tools/list...");
+            stdin.write("{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"tools/list\",\"params\":{}}");
             stdin.newLine();
             stdin.flush();
+
+            String listResponse = readResponse(stdout, 5000);
+            System.out.println("<<< tools/list 响应 (完整):");
+            System.out.println(listResponse);
+            System.out.println();
 
             // ---- 第3步: 逐个发送 codegraph_explore 请求 ----
             for (int i = 0; i < queries.size(); i++) {
