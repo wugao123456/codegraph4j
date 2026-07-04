@@ -158,22 +158,6 @@ public class MCPSession implements MCPTransport.MessageHandler {
         StringBuilder sb = new StringBuilder();
         sb.append("# CodeGraph4j — Semantic Code Knowledge Graph\n\n");
 
-        sb.append("## When to Use CodeGraph4j\n\n");
-        sb.append("In repositories indexed by CodeGraph4j ");
-        sb.append("(a `.codegraph/` directory exists at the repo root), ");
-        sb.append("reach for it **BEFORE** grep/find or reading files ");
-        sb.append("when you need to understand or locate code.\n\n");
-
-        sb.append("- **MCP tool**: `codegraph_explore` — ");
-        sb.append("answers most code questions in one call, returning ");
-        sb.append("the relevant symbols' verbatim source grouped by file, ");
-        sb.append("plus call paths between them and a blast-radius summary. ");
-        sb.append("Name a file or symbol in the query to read its current line-numbered source.\n");
-        sb.append("- **Shell**: `codegraph explore \"<query>\"` prints the same output ");
-        sb.append("(for sub-agents and non-MCP harnesses).\n\n");
-
-        sb.append("If there is no `.codegraph/` directory, skip CodeGraph entirely ");
-        sb.append("— indexing is the user's decision.\n\n");
 
         sb.append("## Available Tools\n\n");
         List<ToolDefinition> tools = toolHandler != null ? toolHandler.getTools() : Collections.emptyList();
@@ -263,4 +247,6 @@ public class MCPSession implements MCPTransport.MessageHandler {
         response.error = new JsonRpcError(code, message);
         transport.send(response);
     }
+
+    
 }

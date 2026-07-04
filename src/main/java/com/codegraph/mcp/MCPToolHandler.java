@@ -13,6 +13,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * MCP 工具处理器 — 薄层门面，负责工具注册和分发。
@@ -50,6 +52,9 @@ public class MCPToolHandler {
     private final ToolRegistry registry;
     private final boolean javaProject;
 
+    private CompletableFuture<Void> catchUpGate = CompletableFuture.completedFuture(null);
+    private volatile boolean firstToolCall = true;
+
     public MCPToolHandler(CodeGraphConfig config, DatabaseConnection db, QueryBuilder queries) {
         this(config, db, queries, true);
     }
@@ -82,6 +87,21 @@ public class MCPToolHandler {
         logger.info("Enabled tools: {} tools", registry.size());
     }
 
+    public void setCatchUpGate(CompletableFuture<Void> gate) {
+        this.catchUpGate = gate;
+    }
+
+    private void waitForCatchUp() {
+        if (firstToolCall) {
+            firstToolCall = false;
+            try {
+                catchUpGate.get(30, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                logger.warn("Catch-up sync timeout or failed: {}", e.getMessage());
+            }
+        }
+    }
+
     public DatabaseConnection getDb() {
         return db;
     }
@@ -93,6 +113,8 @@ public class MCPToolHandler {
 
     /** 按工具名分发执行 */
     public ToolCallResult execute(String toolName, Map<String, Object> args) {
+        waitForCatchUp();
+
         if (!javaProject) {
             return error(NOT_JAVA_MSG);
         }

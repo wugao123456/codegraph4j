@@ -155,7 +155,7 @@ public class SyncOrchestratorUnitTest {
         assertTrue(patterns.contains("target"));
         assertTrue(patterns.contains("build"));
         assertTrue(patterns.contains("dist"));
-        assertEquals(8, patterns.size());
+        assertEquals(11, patterns.size());
     }
 
     // ==================== findCodeFiles ====================

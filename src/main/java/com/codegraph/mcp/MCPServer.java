@@ -9,12 +9,17 @@ import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.mcp.MCPTransport.ToolCallResult;
+import com.codegraph.sync.SyncOrchestrator;
+import com.codegraph.sync.SyncResult;
 
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * MCP 服务器入口点。
@@ -26,6 +31,11 @@ import java.util.Map;
  * 3. 建立数据库连接 → 创建 QueryBuilder → 创建 ToolHandler → 创建 Session
  * 4. Session 在 stdio 上监听 JSON-RPC 请求
  * 5. 当 stdin 关闭时，server 自动退出
+ *
+ * 新增 catch-up sync 机制（对标 Node.js codegraph engine.ts:286-313）：
+ * - MCP 服务启动后立即触发增量同步（异步）
+ * - 首个工具调用等待同步完成（gate 机制）
+ * - 同步完成后输出变更统计到 stderr
  */
 public class MCPServer {
 
@@ -149,6 +159,9 @@ public class MCPServer {
 
                 QueryBuilder queries = new QueryBuilder(db);
                 toolHandler = new MCPToolHandler(config, db, queries);
+
+                startCatchUpSync(queries);
+
                 session = new MCPSession(config.getProjectPath(), toolHandler);
                 session.start();
 
@@ -167,6 +180,30 @@ public class MCPServer {
                 logger.error("Failed to start MCP server", e);
             }
         }
+    }
+
+    /**
+     * 启动 catch-up 同步（对标 Node.js codegraph engine.ts:286-313）。
+     * 异步执行增量同步，首个工具调用等待同步完成。
+     */
+    private void startCatchUpSync(QueryBuilder queries) {
+        CompletableFuture<Void> syncFuture = CompletableFuture.runAsync(() -> {
+            try {
+                Path projectRoot = Paths.get(config.getProjectPath());
+                SyncOrchestrator orchestrator = new SyncOrchestrator();
+                SyncResult result = orchestrator.sync(projectRoot, queries, false, null);
+
+                int changed = result.getFilesChanged();
+                if (changed > 0) {
+                    System.err.println("[CodeGraph MCP] Caught up " + changed + " file(s) changed since last run");
+                }
+            } catch (Exception e) {
+                logger.warn("Catch-up sync failed: {}", e.getMessage());
+            }
+        });
+
+        toolHandler.setCatchUpGate(syncFuture);
+        logger.info("Catch-up sync started — first tool call will wait for completion");
     }
 
     /**
