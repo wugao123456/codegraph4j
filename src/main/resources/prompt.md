@@ -48,4 +48,3 @@ calls; a grep/read exploration is dozens.
 - Index lags file writes by ~1 second.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph4j supplements those with structural context they don't have.
-`;

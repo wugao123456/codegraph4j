@@ -6,26 +6,10 @@ import java.util.concurrent.*;
 
 /**
  * CodeGraph MCP 客户端测试 — 连接到已安装的 codegraph npm 包的 MCP 服务。
- *
- * 使用系统已安装的 codegraph CLI（npm package）:
- *   command: codegraph
- *   args: ["serve", "--mcp", "-p", "/path/to/project"]
- *
- * 完整模拟 Trae 的 MCP 交互流程：
- * 1. spawn codegraph 子进程 (codegraph serve --mcp -p /path/to/project)
- * 2. 发送 initialize → 获取 capabilities
- * 3. 发送 tools/list → 获取可用工具列表
- * 4. 发送 tools/call codegraph_explore → 获取源码分析结果
- * 5. 关闭 stdin → 进程优雅退出
- *
- * 运行方式：
- *   cd codegraph4j && mvn test-compile -q
- *   java -cp "target/test-classes:target/classes:$(mvn -q dependency:build-classpath -Dmdep.outputFile=/dev/stdout)" \
- *     com.codegraph.mcp.CodegraphMcpClientTest -p /path/to/project query=MCPServer
  */
 public class CodegraphMcpClientTest {
 
-    private static final String DEFAULT_PROJECT_PATH = "/Users/wugao-pc/Desktop/Project/codegraph4j";
+    private static final String DEFAULT_PROJECT_PATH = "/Users/wugao-pc/Desktop/Project/stream";
 
     public static void main(String[] args) throws Exception {
         String projectPath = DEFAULT_PROJECT_PATH;
@@ -62,13 +46,17 @@ public class CodegraphMcpClientTest {
         BufferedWriter stdin = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), "UTF-8"));
         BufferedReader stderr = new BufferedReader(new InputStreamReader(process.getErrorStream(), "UTF-8"));
 
+        StringBuilder stderrBuffer = new StringBuilder();
         Thread stderrReader = new Thread(() -> {
             try {
                 String line;
                 while ((line = stderr.readLine()) != null) {
-                    System.err.println("[codegraph] " + line);
+                    stderrBuffer.append(line).append("\n");
+                    System.err.println("[codegraph-stderr] " + line);
                 }
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                System.err.println("[codegraph-stderr] Error reading: " + e.getMessage());
+            }
         }, "stderr-reader");
         stderrReader.setDaemon(true);
         stderrReader.start();
@@ -94,8 +82,8 @@ public class CodegraphMcpClientTest {
             stdin.flush();
 
             String listResponse = readResponse(stdout, 10000);
-            System.out.println("<<< tools/list 响应:");
-            printToolList(listResponse);
+            System.out.println("<<< tools/list 响应 (完整):");
+            System.out.println(listResponse);
             System.out.println();
 
             for (int i = 0; i < queries.size(); i++) {
@@ -105,14 +93,15 @@ public class CodegraphMcpClientTest {
 
                 String exploreMsg = "{\"jsonrpc\":\"2.0\",\"id\":\"" + (i + 3) +
                     "\",\"method\":\"tools/call\",\"params\":{\"name\":\"codegraph_explore\"," +
-                    "\"arguments\":{\"query\":\"" + escapeJson(query) + "\"}}}";
+                    "\"arguments\":{\"query\":\"" + escapeJson(query) + "\",\"projectPath\":\"" + escapeJson(projectPath) + "\"}}}";
                 stdin.write(exploreMsg);
                 stdin.newLine();
                 stdin.flush();
 
-                String exploreResponse = readResponse(stdout, 30000);
-                System.out.println("<<< codegraph_explore 响应 (前500字符):");
-                System.out.println(truncate(exploreResponse, 500));
+                System.out.println("    等待响应... (超时 60秒)");
+                String exploreResponse = readResponse(stdout, 60000);
+                System.out.println("<<< codegraph_explore 响应:");
+                System.out.println(truncate(exploreResponse, 2000));
                 System.out.println();
 
                 extractStats(exploreResponse);
@@ -123,7 +112,14 @@ public class CodegraphMcpClientTest {
             System.out.println("  测试完成！");
             System.out.println("══════════════════════════════════════════════");
 
+        } catch (Exception e) {
+            System.err.println("❌ 异常: " + e.getMessage());
+            e.printStackTrace();
         } finally {
+            System.out.println("\n=== stderr 完整输出 ===");
+            System.out.println(stderrBuffer.toString());
+            System.out.println("========================\n");
+
             stdin.close();
             process.waitFor(5, TimeUnit.SECONDS);
             process.destroyForcibly();

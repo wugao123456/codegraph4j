@@ -176,10 +176,6 @@ public class MCPTransport {
 
     public static class ServerCapabilities {
         public Map<String, Object> tools = new java.util.HashMap<>();
-
-        public ServerCapabilities() {
-            tools.put("listChanged", false);
-        }
     }
 
     public static class ServerInfo {
