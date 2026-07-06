@@ -13,7 +13,7 @@ alwaysApply: true
 
 `codegraph_explore` 接受自然语言问题或一组符号/文件名，并返回：
 - **带行号的逐字源码**，按文件分组（与 Read 返回的 `<n>\t<line>` 格式相同，可安全用于 Edit）
-- **调用路径**，包括 grep 无法追踪的动态分派跳转（如回调、React 重新渲染、JSX 子组件）
+- **调用路径**，包括 grep 无法追踪的动态分派跳转（如接口多态调用、匿名内部类回调、Lambda 表达式）
 - **影响范围摘要**，展示哪些代码依赖于查询结果
 
 在查询中指定文件名或符号名即可读取其当前源码。
@@ -33,7 +33,7 @@ alwaysApply: true
 
 - **直接回答，不要委派探索任务**：一次 `codegraph_explore` codegraph4j 本身就是预构建的索引，因此运行 grep + read 循环或委派给单独的文件读取子任务会重复 codegraph4j 已完成的工作，效率更低。
 - **信任 codegraph4j 的结果**：它们来自完整的 AST 解析。不要用 grep 重新验证，这会更慢、更不准确且浪费上下文。
-- **不要先用 SearchCodebase 或 Read**：一次 `codegraph_explore` 调用即可在单次往返中返回相关符号的源码。仅在确认 codegraph4j 未覆盖的特定细节时，或对于 codegraph4j 未索引的内容（配置、文档），才使用 `SearchCodebase`、`Read` 或 `Grep`。
+- **不要先用 SearchCodebase 或 Read**：一次 `codegraph_explore` 调用即可在单次往返中返回相关符号的源码。仅在确认 codegraph4j 未覆盖的特定细节时，或对于 codegraph4j 未索引的内容（配置、文档），才使用 `Read` 或 `Grep`。
 - **注意索引延迟**：当工具响应以 "⚠️ 以下引用的某些文件自上次索引同步后已被编辑..." 开头时，列出的文件正在等待重新索引——直接读取这些特定文件以获取准确内容。不在该警告中的所有文件都是最新的，可以信任 codegraph4j
 
 ### 如果 `.codegraph/` 不存在
