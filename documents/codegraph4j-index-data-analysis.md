@@ -128,7 +128,7 @@ public class UserService extends BaseService implements IUserService {
 
 ### 2.6 节点 ID 生成规则
 
-[TreeSitterHelpers.java](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterHelpers.java#L36-L50)
+[TreeSitterHelpers.java](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterHelpers.java#L36-L50)
 
 ```
 nodeId = kind + ":" + SHA256(filePath + ":" + kind + ":" + qualifiedName + ":" + line)
@@ -177,7 +177,7 @@ nodeId = kind + ":" + SHA256(filePath + ":" + kind + ":" + qualifiedName + ":" +
 
 ### 3.2 CONTAINS 边的生成逻辑
 
-[ExtractorContext.java](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/ExtractorContext.java#L86-L100)
+[ExtractorContext.java](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/ExtractorContext.java#L86-L100)
 
 * 通过 **作用域栈**（`parentIdStack`）维护当前容器节点
 
@@ -187,7 +187,7 @@ nodeId = kind + ":" + SHA256(filePath + ":" + kind + ":" + qualifiedName + ":" +
 
 ### 3.3 CALLS 边的启发式解析
 
-[TreeSitterExtractor.java](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterExtractor.java#L879-L955)
+[TreeSitterExtractor.java](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterExtractor.java#L879-L955)
 
 两阶段处理：
 
@@ -217,7 +217,7 @@ nodeId = kind + ":" + SHA256(filePath + ":" + kind + ":" + qualifiedName + ":" +
 
 ### 4.2 关键索引与搜索加速
 
-[schema.sql](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/resources/db/schema.sql#L90-L127)
+[schema.sql](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/resources/db/schema.sql#L90-L127)
 
 | 索引                         | 加速的查询                             |
 | -------------------------- | --------------------------------- |
@@ -252,7 +252,7 @@ CREATE VIRTUAL TABLE nodes_fts USING fts5(
 
 ### 5.1 codegraph\_explore 的搜索链路
 
-[ContextBuilder.java](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/context/ContextBuilder.java#L89-L233)
+[ContextBuilder.java](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/context/ContextBuilder.java#L89-L233)
 
 ```
 用户查询 "UserService login"
@@ -303,7 +303,7 @@ Step 7: 渲染输出（骨架化 / 整文件 / 聚类分组）
 
 ### 5.3 自适应输出预算
 
-[ExploreOutputBudget.java](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/context/ExploreOutputBudget.java)
+[ExploreOutputBudget.java](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/context/ExploreOutputBudget.java)
 
 根据索引文件数量自适应调整：
 
@@ -319,25 +319,25 @@ Step 7: 渲染输出（骨架化 / 整文件 / 聚类分组）
 
 #### 问题 1: 单文件异常导致同批次回滚
 
-**位置**: [SyncOrchestrator.java#L193-L196](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/sync/SyncOrchestrator.java#L193-L196)
+**位置**: [SyncOrchestrator.java#L193-L196](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/sync/SyncOrchestrator.java#L193-L196)
 
 batchSize=100，第 73 个文件解析异常触发 `db.rollback()`，前 72 个已处理的文件结果也丢失。
 
 #### 问题 2: 框架提取无事务提交
 
-**位置**: [SyncOrchestrator.java#L215-L293](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/sync/SyncOrchestrator.java#L215-L293)
+**位置**: [SyncOrchestrator.java#L215-L293](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/sync/SyncOrchestrator.java#L215-L293)
 
 `runFrameworkExtraction()` 逐条 insertNode/insertEdge 但无 `db.commit()`，依赖外层隐式提交，数据可能丢失。
 
 #### 问题 3: CALLS 边仅限同文件启发式匹配
 
-**位置**: [TreeSitterExtractor.java#L886-L955](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterExtractor.java#L886-L955)
+**位置**: [TreeSitterExtractor.java#L886-L955](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterExtractor.java#L886-L955)
 
 `resolvePendingReferences` 只在**当前文件的 methods 列表**中查找 callee。跨文件的调用（如 `userService.login()` 调用另一个文件中的方法）无法在单文件解析阶段生成 CALLS 边。跨文件边依赖后续增量 sync 时两个文件都被重新解析才能补全。
 
 #### 问题 4: EXTENDS/IMPLEMENTS 目标节点是伪 ID
 
-**位置**: [TreeSitterExtractor.java#L708-L710](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterExtractor.java#L708-L710)
+**位置**: [TreeSitterExtractor.java#L708-L710](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterExtractor.java#L708-L710)
 
 ```java
 private String buildExternalNodeId(String filePath, String kind, String name) {
@@ -351,25 +351,25 @@ EXTENDS/IMPLEMENTS 的 target 使用 `line=0` 生成 ID，这是一个**伪 ID**
 
 #### 问题 5: 排除目录用 contains() 误伤合法文件
 
-**位置**: [SyncOrchestrator.java#L390-L398](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/sync/SyncOrchestrator.java#L390-L398)
+**位置**: [SyncOrchestrator.java#L390-L398](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/sync/SyncOrchestrator.java#L390-L398)
 
 `pathStr.contains("target")` 会排除 `TargetSelector.java`。
 
 #### 问题 6: JavaScript/TypeScript 使用正则而非 AST
 
-**位置**: [JavaScriptParser.java](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/extraction/JavaScriptParser.java)
+**位置**: [JavaScriptParser.java](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/extraction/JavaScriptParser.java)
 
 JS/TS/JSX/TSX 使用正则表达式匹配，无法生成准确的边。
 
 #### 问题 7: searchNodes 使用 LIKE 而非 FTS5
 
-**位置**: [QueryBuilder.java#L112-L136](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/db/QueryBuilder.java#L112-L136)
+**位置**: [QueryBuilder.java#L112-L136](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/db/QueryBuilder.java#L112-L136)
 
 虽然 schema 中定义了 FTS5 虚拟表和触发器，但 `searchNodes()` 实际使用的是 `LOWER(name) LIKE ?`，并未利用 FTS5 全文索引。FTS5 索引处于"创建但未使用"状态。
 
 #### 问题 8: 节点 ID 中 key-value 只有一个字段
 
-**位置**: [TreeSitterHelpers.java#L36-L50](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterHelpers.java#L36-L50)
+**位置**: [TreeSitterHelpers.java#L36-L50](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/extraction/tree_sitter/TreeSitterHelpers.java#L36-L50)
 
 ID 前缀只有 `kind` 没有 `filePath` 的缩写，多个文件中同类型符号的 ID 前缀完全一样，不利于调试定位。
 

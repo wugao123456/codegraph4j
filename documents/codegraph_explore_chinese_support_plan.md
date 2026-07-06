@@ -20,7 +20,7 @@
   中文意图完全丢失 → 结果: 1 symbol, 0 files
 ```
 
-**根因**：[ContextBuilder.extractSymbols()](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/context/ContextBuilder.java#L341-L365) 的 `VALID_TOKEN_PATTERN` 只匹配 ASCII 标识符，中文等 Unicode 字符被静默丢弃。
+**根因**：[ContextBuilder.extractSymbols()](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/context/ContextBuilder.java#L341-L365) 的 `VALID_TOKEN_PATTERN` 只匹配 ASCII 标识符，中文等 Unicode 字符被静默丢弃。
 
 ### 1.2 现有降级路径的局限
 
@@ -55,7 +55,7 @@ if (symbols.isEmpty()) {
 
 **思路**：不修改 `extractSymbols` 逻辑，在 `findRelevantContext()` 中增加一个**中文感知的文本搜索层**作为补充。
 
-**改动文件**：仅 [ContextBuilder.java](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/context/ContextBuilder.java)
+**改动文件**：仅 [ContextBuilder.java](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/context/ContextBuilder.java)
 
 **改动点**：
 
@@ -110,7 +110,7 @@ if (!chineseTerms.isEmpty()) {
 **思路**：在方案 A 基础上，增加一个中→英关键词映射字典，将常见中文技术术语转为英文搜索关键词。
 
 **改动文件**：
-- [ContextBuilder.java](file:///Users/wugao-pc/Desktop/Project/knowGraph/codegraph4j/src/main/java/com/codegraph/context/ContextBuilder.java)
+- [ContextBuilder.java](file:///Users/wugao-pc/Desktop/Project/codegraph4j/src/main/java/com/codegraph/context/ContextBuilder.java)
 - 新增：`src/main/java/com/codegraph/context/ChineseTermMapper.java`
 
 **核心逻辑**：

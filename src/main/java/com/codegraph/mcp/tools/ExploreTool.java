@@ -483,7 +483,7 @@ public class ExploreTool extends BaseTool {
         logger.info("[codegraph_explore] 处理完成: query=\"{}\", 输出字符数={}, 文件数={}, 耗时={}ms",
             query, resultText.length(), filesIncluded, elapsed);
         ToolCallResult result = text(resultText);
-        MarkdownUtils.writeMarkdownToFile(result, "codegraph_explore", query, config.getProjectPath());
+     //   MarkdownUtils.writeMarkdownToFile(result, "codegraph_explore", query, config.getProjectPath());
         return result;
     }
 
