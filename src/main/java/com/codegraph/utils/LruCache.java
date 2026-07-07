@@ -8,6 +8,9 @@ public class LruCache<K, V> {
     private final int maxSize;
     
     public LruCache(int maxSize) {
+        if (maxSize <= 0) {
+            throw new IllegalArgumentException("maxSize must be positive");
+        }
         this.maxSize = maxSize;
         this.cache = new LinkedHashMap<K, V>(maxSize, 0.75f, true) {
             @Override

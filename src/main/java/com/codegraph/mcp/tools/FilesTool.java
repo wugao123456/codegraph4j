@@ -43,6 +43,10 @@ public class FilesTool extends BaseTool {
     @Override
     public ToolCallResult execute(Map<String, Object> args) {
         try {
+            ToolCallResult validationError = validatePathArg(args, "path");
+            if (validationError != null) return validationError;
+            validationError = validatePathArg(args, "pattern");
+            if (validationError != null) return validationError;
             String path = strArg(args, "path", "");
             List<String> allFiles = queries.getAllFiles();
 

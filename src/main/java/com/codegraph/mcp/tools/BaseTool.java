@@ -19,6 +19,9 @@ import java.util.*;
  */
 public abstract class BaseTool implements Tool {
 
+    protected static final int MAX_INPUT_LENGTH = 10_000;
+    protected static final int MAX_PATH_LENGTH = 4_096;
+
     protected final DatabaseConnection db;
     protected final QueryBuilder queries;
     protected final GraphTraverser traverser;
@@ -47,6 +50,22 @@ public abstract class BaseTool implements Tool {
     protected String strArg(Map<String, Object> args, String key, String defaultValue) {
         Object val = args.get(key);
         return val != null ? val.toString() : defaultValue;
+    }
+
+    protected ToolCallResult validateInputArg(Map<String, Object> args, String key) {
+        String value = strArg(args, key, null);
+        if (value != null && value.length() > MAX_INPUT_LENGTH) {
+            return error(key + " exceeds maximum length of " + MAX_INPUT_LENGTH);
+        }
+        return null;
+    }
+
+    protected ToolCallResult validatePathArg(Map<String, Object> args, String key) {
+        String value = strArg(args, key, null);
+        if (value != null && value.length() > MAX_PATH_LENGTH) {
+            return error(key + " exceeds maximum length of " + MAX_PATH_LENGTH);
+        }
+        return null;
     }
 
     protected int intArg(Map<String, Object> args, String key, int defaultValue) {

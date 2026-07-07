@@ -115,6 +115,10 @@ public class ExploreTool extends BaseTool {
 
     private ToolCallResult handleExplore(Map<String, Object> args) throws SQLException {
         String query = requireArg(args, "query");
+        ToolCallResult validationError = validateInputArg(args, "query");
+        if (validationError != null) return validationError;
+        validationError = validatePathArg(args, "projectPath");
+        if (validationError != null) return validationError;
         long startTime = System.currentTimeMillis();
         logger.info("[codegraph_explore] 开始处理查询: query=\"{}\"", query);
 

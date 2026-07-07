@@ -52,6 +52,10 @@ public class SearchTool extends BaseTool {
     public ToolCallResult execute(Map<String, Object> args) {
         try {
             String query = requireArg(args, "query");
+            ToolCallResult validationError = validateInputArg(args, "query");
+            if (validationError != null) return validationError;
+            validationError = validatePathArg(args, "projectPath");
+            if (validationError != null) return validationError;
             String kind = strArg(args, "kind", null);
             int limit = intArg(args, "limit", 10);
 

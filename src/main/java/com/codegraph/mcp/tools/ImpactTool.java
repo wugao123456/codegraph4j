@@ -47,7 +47,11 @@ public class ImpactTool extends BaseTool {
     public ToolCallResult execute(Map<String, Object> args) {
         try {
             String symbol = requireArg(args, "symbol");
+            ToolCallResult validationError = validateInputArg(args, "symbol");
+            if (validationError != null) return validationError;
             String file = strArg(args, "file", null);
+            validationError = validatePathArg(args, "file");
+            if (validationError != null) return validationError;
             int depth = intArg(args, "depth", 2);
 
             Node node = findSymbol(symbol, file);
