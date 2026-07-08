@@ -14,20 +14,67 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 基于 tree-sitter 的通用代码提取器。
  *
- * 核心流程:
- *   1. 创建 parser，设置语言
- *   2. 解析源码为 AST
- *   3. 深度优先遍历 AST，根据 LanguageExtractor 配置提取符号节点和关系边
- *   4. 清理 parser/tree 资源
- *   5. 返回 ParseResult
+ * <p><b>核心流程：</b>
+ * <ol>
+ *   <li>创建 parser，设置语言（Java）</li>
+ *   <li>解析源码为 AST（抽象语法树）</li>
+ *   <li>深度优先遍历 AST，根据 LanguageExtractor 配置提取符号节点和关系边</li>
+ *   <li>启发式解析方法调用引用，生成 CALLS 边</li>
+ *   <li>解析标识符引用，生成 REFERENCES 边</li>
+ *   <li>清理 parser/tree 资源</li>
+ *   <li>返回 ParseResult（包含节点、边和未解析引用）</li>
+ * </ol>
+ *
+ * <p><b>提取的符号类型：</b>
+ * <ul>
+ *   <li><b>类/接口/枚举</b>：CLASS, INTERFACE, ENUM</li>
+ *   <li><b>成员</b>：METHOD, FIELD, ENUM_MEMBER</li>
+ *   <li><b>模块</b>：MODULE（包）, IMPORT</li>
+ * </ul>
+ *
+ * <p><b>生成的边类型：</b>
+ * <ul>
+ *   <li><b>CONTAINS</b>：父节点包含子节点（file→class, class→method, etc.）</li>
+ *   <li><b>EXTENDS</b>：类继承关系</li>
+ *   <li><b>IMPLEMENTS</b>：类实现接口关系</li>
+ *   <li><b>CALLS</b>：方法调用关系</li>
+ *   <li><b>REFERENCES</b>：字段/枚举成员引用</li>
+ *   <li><b>IMPORTS</b>：包导入关系</li>
+ * </ul>
  */
 public class TreeSitterExtractor {
 
     private static final Logger logger = LoggerFactory.getLogger(TreeSitterExtractor.class);
+
+    /**
+     * 格式化字符串，用于在 DEBUG 日志中显示节点类型和位置信息。
+     */
+    private static final String NODE_INFO_FORMAT = "type=%s, namedChildren=%d, error=%s, missing=%s";
+
+    /**
+     * 格式化字符串，用于在 DEBUG 日志中显示节点创建信息。
+     */
+    private static final String NODE_CREATE_FORMAT = "创建 %s '%s' vis=%s static=%s abstract=%s";
+
+    /**
+     * 格式化字符串，用于显示解析统计信息。
+     */
+    private static final String PARSE_STATS_FORMAT = "nodes=%d  edges=%d";
+
+    /**
+     * 格式化字符串，用于显示节点类型统计。
+     */
+    private static final String NODE_TYPE_STATS_FORMAT = "class=%d, interface=%d, enum=%d, method=%d, field=%d, module=%d, import=%d";
+
+    /**
+     * 格式化字符串，用于显示边类型统计。
+     */
+    private static final String EDGE_TYPE_STATS_FORMAT = "contains=%d, calls=%d, extends=%d, implements=%d, imports=%d, references=%d";
 
     private final TreeSitterNative ts;
 
@@ -42,10 +89,36 @@ public class TreeSitterExtractor {
     /**
      * 提取源码中的符号节点和关系边。
      *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li>创建 tree-sitter parser 并设置 Java 语言</li>
+     *   <li>解析源码生成 AST（抽象语法树）</li>
+     *   <li>初始化提取上下文，创建文件节点</li>
+     *   <li>深度优先遍历 AST，提取各类符号节点和关系边</li>
+     *   <li>启发式解析方法调用，生成 CALLS 边</li>
+     *   <li>解析标识符引用，生成 REFERENCES 边</li>
+     *   <li>清理 parser/tree 资源</li>
+     *   <li>构建并返回 ParseResult</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 输入源码：
+     *   package com.example;
+     *   public class Foo {
+     *       private String name;
+     *       public void bar() { System.out.println(name); }
+     *   }
+     *
+     * 输出节点：MODULE(com.example), CLASS(Foo), FIELD(name), METHOD(bar)
+     * 输出边：CONTAINS(MODULE→CLASS), CONTAINS(CLASS→FIELD), CONTAINS(CLASS→METHOD),
+     *         REFERENCES(METHOD→FIELD)
+     * </pre>
+     *
      * @param filePath  文件路径
      * @param source    源码内容
-     * @param extractor 语言提取器配置
-     * @return 解析结果
+     * @param extractor 语言提取器配置（定义如何识别各类语法结构）
+     * @return 解析结果，包含提取的节点、边和未解析的外部引用
      */
     public ParseResult extract(Path filePath, String source, LanguageExtractor extractor) {
         String filePathStr = filePath.toString();
@@ -54,61 +127,129 @@ public class TreeSitterExtractor {
 
         logger.debug("[extract] === 开始解析: {} ({} chars) ===", filePathStr, sourceLen);
 
-        // 1. 获取 language 指针
-        Pointer language = TreeSitterLibrary.getJavaLanguage();
-        if (language == null) {
-            logger.error("[extract] Java language pointer is null");
-            return new ParseResult();
-        }
-        logger.trace("[extract] language pointer: {}", language);
-
-        // 2. 创建 parser 并设置语言
-        Pointer parser = ts.ts_parser_new();
+        // 1. 创建 parser 并解析源码
+        Pointer parser = createParser();
         if (parser == null) {
-            logger.error("[extract] Failed to create parser");
+            logger.error("[extract] 创建 parser 失败");
             return new ParseResult();
         }
-        logger.trace("[extract] parser created: {}", parser);
 
-        boolean langOk = ts.ts_parser_set_language(parser, language) != 0;
-        if (!langOk) {
-            logger.error("[extract] Failed to set language on parser");
-            ts.ts_parser_delete(parser);
-            return new ParseResult();
-        }
-        logger.trace("[extract] language set on parser: ok");
-
-        // 3. 解析（使用 UTF-8 字节长度，而非 Java 字符数）
-        byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
-        int byteLen = sourceBytes.length;
-        logger.trace("[extract] parsing {} chars ({} UTF-8 bytes)...", sourceLen, byteLen);
-
-        Pointer tree = ts.ts_parser_parse_string(parser, null, source, byteLen);
+        Pointer tree = parseSource(parser, source);
         if (tree == null) {
-            logger.error("[extract] Parse returned null tree for {}", filePathStr);
+            logger.error("[extract] 解析源码失败");
             ts.ts_parser_delete(parser);
             return new ParseResult();
         }
-        logger.trace("[extract] tree created: {}", tree);
 
         TSNode rootNode = ts.ts_tree_root_node(tree);
         if (ts.ts_node_is_null(rootNode)) {
-            logger.error("[extract] Root node is null for {}", filePathStr);
-            ts.ts_tree_delete(tree);
-            ts.ts_parser_delete(parser);
+            logger.error("[extract] 根节点为空");
+            cleanupResources(parser, tree);
             return new ParseResult();
         }
 
-        String rootType = ts.ts_node_type(rootNode);
-        int rootNamedChildren = ts.ts_node_named_child_count(rootNode);
-        boolean hasError = ts.ts_node_has_error(rootNode);
-        logger.debug("[extract] root node: type={}, namedChildren={}, hasError={}",
-            rootType, rootNamedChildren, hasError);
+        logRootNodeInfo(rootNode, filePathStr);
 
-        // 4. 遍历 AST
+        // 2. 遍历 AST 提取符号
+        ExtractorContext ctx = createExtractorContext(filePathStr, source);
+        try {
+            visitNode(rootNode, ctx, extractor);
+        } catch (Exception e) {
+            logger.error("[extract] AST 遍历时发生错误: {}: {}", filePathStr, e.getMessage(), e);
+        }
+        ctx.popScope();
+
+        // 3. 解析引用，生成边
+        resolvePendingReferences(ctx);
+        resolveIdentifierReferences(ctx);
+
+        // 4. 清理资源
+        cleanupResources(parser, tree);
+
+        // 5. 构建结果并记录统计
+        ParseResult result = buildParseResult(ctx);
+        logExtractionStats(result, filePathStr, System.currentTimeMillis() - startTime);
+
+        return result;
+    }
+
+    /**
+     * 创建并初始化 tree-sitter parser。
+     *
+     * <p><b>步骤：</b>
+     * <ol>
+     *   <li>获取 Java language 指针</li>
+     *   <li>创建 parser 实例</li>
+     *   <li>设置 parser 的语言为 Java</li>
+     * </ol>
+     *
+     * @return parser 指针，如果创建失败返回 null
+     */
+    private Pointer createParser() {
+        Pointer language = TreeSitterLibrary.getJavaLanguage();
+        if (language == null) {
+            logger.error("[parser] Java language 指针为空");
+            return null;
+        }
+        logger.trace("[parser] language pointer: {}", language);
+
+        Pointer parser = ts.ts_parser_new();
+        if (parser == null) {
+            logger.error("[parser] 创建 parser 失败");
+            return null;
+        }
+        logger.trace("[parser] parser 创建成功: {}", parser);
+
+        boolean langOk = ts.ts_parser_set_language(parser, language) != 0;
+        if (!langOk) {
+            logger.error("[parser] 设置语言失败");
+            ts.ts_parser_delete(parser);
+            return null;
+        }
+        logger.trace("[parser] 语言设置成功");
+
+        return parser;
+    }
+
+    /**
+     * 使用 parser 解析源码，生成 AST。
+     *
+     * <p><b>注意：</b>使用 UTF-8 字节长度而非 Java 字符数，因为 tree-sitter
+     * 底层使用字节偏移量。
+     *
+     * @param parser 已初始化的 parser
+     * @param source 源码内容
+     * @return AST tree 指针，如果解析失败返回 null
+     */
+    private Pointer parseSource(Pointer parser, String source) {
+        byte[] sourceBytes = source.getBytes(StandardCharsets.UTF_8);
+        int byteLen = sourceBytes.length;
+        logger.trace("[parse] 解析 {} 字符 ({} UTF-8 字节)...", source.length(), byteLen);
+
+        Pointer tree = ts.ts_parser_parse_string(parser, null, source, byteLen);
+        if (tree == null) {
+            logger.error("[parse] 解析返回空 tree");
+            return null;
+        }
+        logger.trace("[parse] tree 创建成功: {}", tree);
+
+        return tree;
+    }
+
+    /**
+     * 创建提取上下文并初始化文件节点。
+     *
+     * <p><b>文件节点的作用：</b>
+     * 文件节点作为整个提取过程的根作用域，后续所有顶层节点（包、类、接口等）
+     * 会自动与文件节点建立 CONTAINS 边，形成完整的包含关系树。
+     *
+     * @param filePathStr 文件路径字符串
+     * @param source 源码内容
+     * @return 已初始化的提取上下文
+     */
+    private ExtractorContext createExtractorContext(String filePathStr, String source) {
         ExtractorContext ctx = new ExtractorContext(filePathStr, source, ts);
 
-        // 创建文件节点并推入作用域栈（后续所有顶层节点会自动建立 file→节点的 CONTAINS 边）
         String fileNodeId = TreeSitterHelpers.generateNodeId(filePathStr, "file", filePathStr, 1);
         com.codegraph.core.Node fileNode = new com.codegraph.core.Node();
         fileNode.setId(fileNodeId);
@@ -122,63 +263,138 @@ public class TreeSitterExtractor {
         fileNode.setEndLine(1);
         fileNode.setEndColumn(1);
         fileNode.setUpdatedAt(System.currentTimeMillis());
+
         ctx.getNodes().add(fileNode);
         ctx.pushScope(filePathStr, fileNodeId);
 
-        try {
-            visitNode(rootNode, ctx, extractor);
-        } catch (Exception e) {
-            logger.error("[extract] Error during AST traversal for {}: {}", filePathStr, e.getMessage(), e);
-        }
+        logger.trace("[ctx] 文件节点创建: id={}, path={}", fileNodeId, filePathStr);
 
-        ctx.popScope();
+        return ctx;
+    }
 
-        // 4.1 解析方法调用引用，生成 CALLS 边（启发式）
-        resolvePendingReferences(ctx);
-
-        // 4.2 解析标识符引用，生成 references 边（同文件 FIELD/ENUM_MEMBER 匹配）
-        resolveIdentifierReferences(ctx);
-
-        // 5. 清理
+    /**
+     * 清理 parser 和 tree 资源。
+     *
+     * <p><b>资源管理注意：</b>tree-sitter 使用 native 内存，必须显式释放，
+     * 否则会造成内存泄漏。
+     *
+     * @param parser parser 指针
+     * @param tree tree 指针
+     */
+    private void cleanupResources(Pointer parser, Pointer tree) {
         ts.ts_tree_delete(tree);
         ts.ts_parser_delete(parser);
-        logger.trace("[extract] parser & tree cleaned up");
+        logger.trace("[cleanup] parser & tree 资源已释放");
+    }
 
+    /**
+     * 记录根节点信息到日志。
+     *
+     * @param rootNode 根节点
+     * @param filePathStr 文件路径
+     */
+    private void logRootNodeInfo(TSNode rootNode, String filePathStr) {
+        String rootType = ts.ts_node_type(rootNode);
+        int rootNamedChildren = ts.ts_node_named_child_count(rootNode);
+        boolean hasError = ts.ts_node_has_error(rootNode);
+        logger.debug("[extract] 根节点信息: {}", String.format(NODE_INFO_FORMAT,
+            rootType, rootNamedChildren, hasError, ts.ts_node_is_missing(rootNode)));
+    }
+
+    /**
+     * 构建 ParseResult，包含节点、边和未解析引用。
+     *
+     * @param ctx 提取上下文
+     * @return ParseResult
+     */
+    private ParseResult buildParseResult(ExtractorContext ctx) {
         ParseResult result = new ParseResult(ctx.getNodes(), ctx.getEdges());
-        // 将无法在当前文件内解析的引用移到 ParseResult，供 SyncOrchestrator 写入 unresolved_refs
         result.getUnresolvedRefs().addAll(ctx.getUnresolvedRefs());
-        long elapsed = System.currentTimeMillis() - startTime;
+        return result;
+    }
 
-        // 按类型统计
-        long classCount = result.getNodes().stream().filter(n -> n.getKind() == NodeKind.CLASS).count();
-        long methodCount = result.getNodes().stream().filter(n -> n.getKind() == NodeKind.METHOD).count();
-        long fieldCount = result.getNodes().stream().filter(n -> n.getKind() == NodeKind.FIELD).count();
-        long ifaceCount = result.getNodes().stream().filter(n -> n.getKind() == NodeKind.INTERFACE).count();
-        long enumCount  = result.getNodes().stream().filter(n -> n.getKind() == NodeKind.ENUM).count();
-        long moduleCount = result.getNodes().stream().filter(n -> n.getKind() == NodeKind.MODULE).count();
-        long importCount = result.getNodes().stream().filter(n -> n.getKind() == NodeKind.IMPORT).count();
+    /**
+     * 记录提取统计信息到日志。
+     *
+     * <p><b>统计维度：</b>
+     * <ul>
+     *   <li>总节点数和边数</li>
+     *   <li>按类型统计节点（class, interface, enum, method, field, module, import）</li>
+     *   <li>按类型统计边（contains, calls, extends, implements, imports, references）</li>
+     * </ul>
+     *
+     * @param result 解析结果
+     * @param filePathStr 文件路径
+     * @param elapsed 耗时（毫秒）
+     */
+    private void logExtractionStats(ParseResult result, String filePathStr, long elapsed) {
+        Map<NodeKind, Long> nodeTypeCounts = result.getNodes().stream()
+            .collect(Collectors.groupingBy(com.codegraph.core.Node::getKind, Collectors.counting()));
 
-        long callsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.CALLS).count();
-        long extendsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.EXTENDS).count();
-        long implementsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.IMPLEMENTS).count();
-        long containsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.CONTAINS).count();
-        long importsCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.IMPORTS).count();
-        long referencesCount = result.getEdges().stream().filter(e -> e.getKind() == EdgeKind.REFERENCES).count();
+        Map<EdgeKind, Long> edgeTypeCounts = result.getEdges().stream()
+            .collect(Collectors.groupingBy(com.codegraph.core.Edge::getKind, Collectors.counting()));
 
         logger.debug("[extract] === 解析完成: {} ({}ms) ===", filePathStr, elapsed);
         logger.debug("[extract]   nodes={}  edges={}", result.getNodeCount(), result.getEdgeCount());
-        logger.debug("[extract]   按类型: class={}, interface={}, enum={}, method={}, field={}, module={}, import={}",
-            classCount, ifaceCount, enumCount, methodCount, fieldCount, moduleCount, importCount);
-        logger.debug("[extract]   按边: contains={}, calls={}, extends={}, implements={}, imports={}, references={}",
-            containsCount, callsCount, extendsCount, implementsCount, importsCount, referencesCount);
-
-        return result;
+        logger.debug("[extract]   按类型: {}", String.format(NODE_TYPE_STATS_FORMAT,
+            nodeTypeCounts.getOrDefault(NodeKind.CLASS, 0L),
+            nodeTypeCounts.getOrDefault(NodeKind.INTERFACE, 0L),
+            nodeTypeCounts.getOrDefault(NodeKind.ENUM, 0L),
+            nodeTypeCounts.getOrDefault(NodeKind.METHOD, 0L),
+            nodeTypeCounts.getOrDefault(NodeKind.FIELD, 0L),
+            nodeTypeCounts.getOrDefault(NodeKind.MODULE, 0L),
+            nodeTypeCounts.getOrDefault(NodeKind.IMPORT, 0L)));
+        logger.debug("[extract]   按边: {}", String.format(EDGE_TYPE_STATS_FORMAT,
+            edgeTypeCounts.getOrDefault(EdgeKind.CONTAINS, 0L),
+            edgeTypeCounts.getOrDefault(EdgeKind.CALLS, 0L),
+            edgeTypeCounts.getOrDefault(EdgeKind.EXTENDS, 0L),
+            edgeTypeCounts.getOrDefault(EdgeKind.IMPLEMENTS, 0L),
+            edgeTypeCounts.getOrDefault(EdgeKind.IMPORTS, 0L),
+            edgeTypeCounts.getOrDefault(EdgeKind.REFERENCES, 0L)));
     }
 
     // =========================================================================
     // AST traversal
     // =========================================================================
 
+    /**
+     * 深度优先遍历 AST 节点，根据节点类型调用相应的处理方法。
+     *
+     * <p><b>遍历策略：</b>
+     * <ul>
+     *   <li>按优先级顺序检查节点类型</li>
+     *   <li>每个节点只被处理一次（visited 标志）</li>
+     *   <li>如果节点被特定处理器处理，则不再递归遍历其子节点</li>
+     *   <li>如果节点未被处理（visited=false），递归遍历所有命名子节点</li>
+     * </ul>
+     *
+     * <p><b>支持的节点类型及处理优先级：</b>
+     * <ol>
+     *   <li><b>类/接口/枚举</b>：class_types, interface_types, enum_types</li>
+     *   <li><b>方法/构造器</b>：method_types</li>
+     *   <li><b>字段</b>：field_types</li>
+     *   <li><b>包声明</b>：package_types</li>
+     *   <li><b>导入声明</b>：import_types</li>
+     *   <li><b>枚举常量</b>：enum_member_types</li>
+     *   <li><b>方法调用</b>：method_invocation_types</li>
+     *   <li><b>super 调用</b>：super_method_types</li>
+     *   <li><b>对象创建</b>：object_creation_expression</li>
+     *   <li><b>标识符引用</b>：identifier（仅在方法体内）</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * 对于 AST 节点 `class Foo { void bar() {} }`：
+     * <ul>
+     *   <li>visitNode 遇到 class 类型 → 调用 visitClass</li>
+     *   <li>visitClass 遍历 class body 的子节点</li>
+     *   <li>遇到 method 类型 → 调用 visitMethod</li>
+     *   <li>visitMethod 遍历 method body 的子节点</li>
+     * </ul>
+     *
+     * @param node 当前 AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     */
     private void visitNode(TSNode node, ExtractorContext ctx, LanguageExtractor extractor) {
         if (ts.ts_node_is_null(node)) return;
 
@@ -196,124 +412,11 @@ public class TreeSitterExtractor {
         String source = ctx.getSource();
         boolean visited = false;
 
-        // ---- Class declaration ----
-        if (extractor.classTypes().contains(nodeType)) {
-            visited = true;
-            logger.trace("[visit] {}→ visitClass (kind=CLASS)", depthPrefix(depth));
-            visitClass(node, ctx, extractor, NodeKind.CLASS);
-        }
+        visited = handleTypeDeclaration(node, ctx, extractor, depth, visited);
+        visited = handleMemberDeclaration(node, ctx, extractor, source, depth, visited);
+        visited = handlePackageAndImport(node, ctx, extractor, source, depth, visited);
+        visited = handleExpressions(node, ctx, extractor, source, depth, visited);
 
-        // ---- Interface declaration ----
-        if (!visited && extractor.interfaceTypes().contains(nodeType)) {
-            visited = true;
-            logger.trace("[visit] {}→ visitClass (kind=INTERFACE)", depthPrefix(depth));
-            visitClass(node, ctx, extractor, NodeKind.INTERFACE);
-        }
-
-        // ---- Enum declaration ----
-        if (!visited && extractor.enumTypes().contains(nodeType)) {
-            visited = true;
-            logger.trace("[visit] {}→ visitEnum", depthPrefix(depth));
-            visitEnum(node, ctx, extractor);
-        }
-
-        // ---- Method / Constructor ----
-        if (!visited && extractor.methodTypes().contains(nodeType)) {
-            visited = true;
-            TSNode nameNode = TreeSitterHelpers.getChildByField(node, extractor.nameField(), ts);
-            String methodPreview = ts.ts_node_is_null(nameNode)
-                ? "?" : TreeSitterHelpers.getNodeText(nameNode, source, ts);
-            logger.trace("[visit] {}→ visitMethod '{}' (type={})", depthPrefix(depth), methodPreview, nodeType);
-            visitMethod(node, ctx, extractor, nodeType);
-        }
-
-        // ---- Field ----
-        if (!visited && extractor.fieldTypes().contains(nodeType)) {
-            visited = true;
-            logger.trace("[visit] {}→ visitField", depthPrefix(depth));
-            visitField(node, ctx, extractor);
-        }
-
-        // ---- Package ----
-        if (!visited && extractor.packageTypes().contains(nodeType)) {
-            visited = true;
-            String pkgName = extractor.extractPackage(node, source);
-            logger.trace("[visit] {}→ package '{}'", depthPrefix(depth), pkgName);
-            if (pkgName != null && !pkgName.isEmpty()) {
-                ctx.setPackageName(pkgName);
-                String moduleNodeId = ctx.addPackageOrImportNode(NodeKind.MODULE, pkgName, node);
-                ctx.setModuleNodeId(moduleNodeId);
-                logger.debug("[visit] {}  package set: {}, moduleNodeId={}", depthPrefix(depth), pkgName, moduleNodeId);
-            }
-        }
-
-        // ---- Import ----
-        if (!visited && extractor.importTypes().contains(nodeType)) {
-            visited = true;
-            ImportInfo importInfo = extractor.extractImport(node, source);
-            if (importInfo != null && importInfo.getModuleName() != null
-                && !importInfo.getModuleName().isEmpty()) {
-                logger.trace("[visit] {}→ import '{}'", depthPrefix(depth), importInfo.getModuleName());
-                String importNodeId = ctx.addPackageOrImportNode(NodeKind.IMPORT, importInfo.getModuleName(), node);
-
-                // 创建 module → import 的 imports 边和 CONTAINS 边
-                String moduleId = ctx.getModuleNodeId();
-                if (moduleId != null) {
-                    TSPoint startPoint = ts.ts_node_start_point(node);
-                    Map<String, Object> importMeta = new HashMap<>();
-                    importMeta.put("provenance", "tree-sitter");
-                    ctx.addEdge(moduleId, importNodeId, EdgeKind.IMPORTS,
-                        startPoint.row + 1, startPoint.column + 1, "tree-sitter", importMeta);
-                    // CONTAINS: module → import
-                    ctx.addEdge(moduleId, importNodeId, EdgeKind.CONTAINS,
-                        startPoint.row + 1, startPoint.column + 1);
-                    logger.debug("[visit] {}  added imports + contains: module={} → import={}",
-                        depthPrefix(depth), moduleId, importNodeId);
-                }
-            } else {
-                logger.trace("[visit] {}→ import (skipped, empty)", depthPrefix(depth));
-            }
-        }
-
-        // ---- Enum constant ----
-        if (!visited && extractor.enumMemberTypes().contains(nodeType)) {
-            visited = true;
-            logger.trace("[visit] {}→ visitEnumConstant", depthPrefix(depth));
-            visitEnumConstant(node, ctx, extractor);
-        }
-
-        // ---- Method invocation (method call) ----
-        if (!visited && extractor.methodInvocationTypes().contains(nodeType)) {
-            visited = true;
-            logger.trace("[visit] {}→ processMethodInvocation '{}'", depthPrefix(depth), nodeType);
-            processMethodInvocation(node, ctx, extractor, false);
-        }
-
-        // ---- Super method invocation ----
-        if (!visited && extractor.superMethodTypes().contains(nodeType)) {
-            visited = true;
-            logger.trace("[visit] {}→ processMethodInvocation (super) '{}'", depthPrefix(depth), nodeType);
-            processMethodInvocation(node, ctx, extractor, true);
-        }
-
-        // ---- Object creation expression (new ClassName()) → instantiates ----
-        if (!visited && "object_creation_expression".equals(nodeType)) {
-            visited = true;
-            logger.trace("[visit] {}→ processObjectCreation '{}'", depthPrefix(depth), nodeType);
-            processObjectCreation(node, ctx, ts);
-        }
-
-        // ---- Identifier (inside method body) → references tracking ----
-        if (!visited && "identifier".equals(nodeType) && ctx.getCurrentMethodId() != null) {
-            visited = true;
-            String identName = TreeSitterHelpers.getNodeText(node, source, ts);
-            if (identName != null && !identName.isEmpty()) {
-                TSPoint startPoint = ts.ts_node_start_point(node);
-                ctx.addIdentifierRef(identName, startPoint.row + 1, startPoint.column + 1);
-            }
-        }
-
-        // ---- Recursion: visit children ----
         if (!visited) {
             for (int i = 0; i < namedChildCount; i++) {
                 TSNode child = ts.ts_node_named_child(node, i);
@@ -322,7 +425,188 @@ public class TreeSitterExtractor {
         }
     }
 
-    /** 生成缩进前缀，配合 scopeDepth 可视化 AST 层级 */
+    /**
+     * 处理类型声明节点：类、接口、枚举。
+     *
+     * @param node 当前 AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     * @param depth 当前深度
+     * @param visited 是否已被处理
+     * @return true 如果节点已被处理
+     */
+    private boolean handleTypeDeclaration(TSNode node, ExtractorContext ctx,
+            LanguageExtractor extractor, int depth, boolean visited) {
+        String nodeType = ts.ts_node_type(node);
+
+        if (!visited && extractor.classTypes().contains(nodeType)) {
+            logger.trace("[visit] {}→ visitClass (kind=CLASS)", depthPrefix(depth));
+            visitClass(node, ctx, extractor, NodeKind.CLASS);
+            return true;
+        }
+
+        if (!visited && extractor.interfaceTypes().contains(nodeType)) {
+            logger.trace("[visit] {}→ visitClass (kind=INTERFACE)", depthPrefix(depth));
+            visitClass(node, ctx, extractor, NodeKind.INTERFACE);
+            return true;
+        }
+
+        if (!visited && extractor.enumTypes().contains(nodeType)) {
+            logger.trace("[visit] {}→ visitEnum", depthPrefix(depth));
+            visitEnum(node, ctx, extractor);
+            return true;
+        }
+
+        return visited;
+    }
+
+    /**
+     * 处理成员声明节点：方法、字段、枚举常量。
+     *
+     * @param node 当前 AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     * @param source 源码内容
+     * @param depth 当前深度
+     * @param visited 是否已被处理
+     * @return true 如果节点已被处理
+     */
+    private boolean handleMemberDeclaration(TSNode node, ExtractorContext ctx,
+            LanguageExtractor extractor, String source, int depth, boolean visited) {
+        String nodeType = ts.ts_node_type(node);
+
+        if (!visited && extractor.methodTypes().contains(nodeType)) {
+            TSNode nameNode = TreeSitterHelpers.getChildByField(node, extractor.nameField(), ts);
+            String methodPreview = ts.ts_node_is_null(nameNode)
+                ? "?" : TreeSitterHelpers.getNodeText(nameNode, source, ts);
+            logger.trace("[visit] {}→ visitMethod '{}' (type={})", depthPrefix(depth), methodPreview, nodeType);
+            visitMethod(node, ctx, extractor, nodeType);
+            return true;
+        }
+
+        if (!visited && extractor.fieldTypes().contains(nodeType)) {
+            logger.trace("[visit] {}→ visitField", depthPrefix(depth));
+            visitField(node, ctx, extractor);
+            return true;
+        }
+
+        if (!visited && extractor.enumMemberTypes().contains(nodeType)) {
+            logger.trace("[visit] {}→ visitEnumConstant", depthPrefix(depth));
+            visitEnumConstant(node, ctx, extractor);
+            return true;
+        }
+
+        return visited;
+    }
+
+    /**
+     * 处理包声明和导入声明节点。
+     *
+     * @param node 当前 AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     * @param source 源码内容
+     * @param depth 当前深度
+     * @param visited 是否已被处理
+     * @return true 如果节点已被处理
+     */
+    private boolean handlePackageAndImport(TSNode node, ExtractorContext ctx,
+            LanguageExtractor extractor, String source, int depth, boolean visited) {
+        String nodeType = ts.ts_node_type(node);
+
+        if (!visited && extractor.packageTypes().contains(nodeType)) {
+            String pkgName = extractor.extractPackage(node, source);
+            logger.trace("[visit] {}→ package '{}'", depthPrefix(depth), pkgName);
+            if (pkgName != null && !pkgName.isEmpty()) {
+                ctx.setPackageName(pkgName);
+                String moduleNodeId = ctx.addPackageOrImportNode(NodeKind.MODULE, pkgName, node);
+                ctx.setModuleNodeId(moduleNodeId);
+                logger.debug("[visit] {}  package set: {}, moduleNodeId={}", depthPrefix(depth), pkgName, moduleNodeId);
+            }
+            return true;
+        }
+
+        if (!visited && extractor.importTypes().contains(nodeType)) {
+            ImportInfo importInfo = extractor.extractImport(node, source);
+            if (importInfo != null && importInfo.getModuleName() != null
+                && !importInfo.getModuleName().isEmpty()) {
+                logger.trace("[visit] {}→ import '{}'", depthPrefix(depth), importInfo.getModuleName());
+                String importNodeId = ctx.addPackageOrImportNode(NodeKind.IMPORT, importInfo.getModuleName(), node);
+
+                String moduleId = ctx.getModuleNodeId();
+                if (moduleId != null) {
+                    TSPoint startPoint = ts.ts_node_start_point(node);
+                    Map<String, Object> importMeta = new HashMap<>();
+                    importMeta.put("provenance", "tree-sitter");
+                    ctx.addEdge(moduleId, importNodeId, EdgeKind.IMPORTS,
+                        startPoint.row + 1, startPoint.column + 1, "tree-sitter", importMeta);
+                    ctx.addEdge(moduleId, importNodeId, EdgeKind.CONTAINS,
+                        startPoint.row + 1, startPoint.column + 1);
+                    logger.debug("[visit] {}  added imports + contains: module={} → import={}",
+                        depthPrefix(depth), moduleId, importNodeId);
+                }
+            } else {
+                logger.trace("[visit] {}→ import (skipped, empty)", depthPrefix(depth));
+            }
+            return true;
+        }
+
+        return visited;
+    }
+
+    /**
+     * 处理表达式节点：方法调用、super 调用、对象创建、标识符引用。
+     *
+     * @param node 当前 AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     * @param source 源码内容
+     * @param depth 当前深度
+     * @param visited 是否已被处理
+     * @return true 如果节点已被处理
+     */
+    private boolean handleExpressions(TSNode node, ExtractorContext ctx,
+            LanguageExtractor extractor, String source, int depth, boolean visited) {
+        String nodeType = ts.ts_node_type(node);
+
+        if (!visited && extractor.methodInvocationTypes().contains(nodeType)) {
+            logger.trace("[visit] {}→ processMethodInvocation '{}'", depthPrefix(depth), nodeType);
+            processMethodInvocation(node, ctx, extractor, false);
+            return true;
+        }
+
+        if (!visited && extractor.superMethodTypes().contains(nodeType)) {
+            logger.trace("[visit] {}→ processMethodInvocation (super) '{}'", depthPrefix(depth), nodeType);
+            processMethodInvocation(node, ctx, extractor, true);
+            return true;
+        }
+
+        if (!visited && "object_creation_expression".equals(nodeType)) {
+            logger.trace("[visit] {}→ processObjectCreation '{}'", depthPrefix(depth), nodeType);
+            processObjectCreation(node, ctx, ts);
+            return true;
+        }
+
+        if (!visited && "identifier".equals(nodeType) && ctx.getCurrentMethodId() != null) {
+            String identName = TreeSitterHelpers.getNodeText(node, source, ts);
+            if (identName != null && !identName.isEmpty()) {
+                TSPoint startPoint = ts.ts_node_start_point(node);
+                ctx.addIdentifierRef(identName, startPoint.row + 1, startPoint.column + 1);
+            }
+            return true;
+        }
+
+        return visited;
+    }
+
+    /**
+     * 生成缩进前缀，配合 scopeDepth 可视化 AST 层级。
+     *
+     * <p>每级深度生成 2 个空格的缩进，用于在日志中区分嵌套层级。
+     *
+     * @param depth 当前深度（0 表示顶级）
+     * @return 缩进字符串
+     */
     private static String depthPrefix(int depth) {
         if (depth <= 0) return "";
         StringBuilder sb = new StringBuilder();
@@ -331,9 +615,42 @@ public class TreeSitterExtractor {
     }
 
     // =========================================================================
-    // Class / Interface
+    // Type declaration: Class / Interface / Enum
     // =========================================================================
 
+    /**
+     * 处理类或接口声明节点。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li>提取类名/接口名</li>
+     *   <li>提取文档注释（Javadoc）</li>
+     *   <li>提取可见性和修饰符（static, abstract）</li>
+     *   <li>创建节点并推入作用域</li>
+     *   <li>处理 EXTENDS 边（类继承）</li>
+     *   <li>处理 IMPLEMENTS 边（接口实现）</li>
+     *   <li>遍历 body 子节点，提取成员（方法、字段等）</li>
+     *   <li>调用 Lombok 合成成员</li>
+     *   <li>退出作用域</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 输入源码：
+     *   public class Foo extends Bar implements Baz {
+     *       private String name;
+     *   }
+     *
+     * 输出：
+     *   - 节点：CLASS(Foo)
+     *   - 边：EXTENDS(Foo→Bar), IMPLEMENTS(Foo→Baz), CONTAINS(Foo→name)
+     * </pre>
+     *
+     * @param node AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     * @param kind 节点类型（CLASS 或 INTERFACE）
+     */
     private void visitClass(TSNode node, ExtractorContext ctx, LanguageExtractor extractor, NodeKind kind) {
         String source = ctx.getSource();
         TreeSitterNative ts = ctx.getTreeSitter();
@@ -341,15 +658,8 @@ public class TreeSitterExtractor {
 
         // 获取类名
         TSNode nameNode = TreeSitterHelpers.getChildByField(node, extractor.nameField(), ts);
-        if (ts.ts_node_is_null(nameNode)) {
-            logger.trace("[class] {}nameNode is null, skipping", depthPrefix(depth));
-            return;
-        }
-        String className = TreeSitterHelpers.getNodeText(nameNode, source, ts);
-        if (className == null || className.isEmpty()) {
-            logger.trace("[class] {}className is empty, skipping", depthPrefix(depth));
-            return;
-        }
+        String className = extractTypeName(nameNode, source, ts, depth, "class");
+        if (className == null) return;
 
         // 获取文档注释
         String docstring = TreeSitterHelpers.getPrecedingDocstring(node, source, ts);
@@ -375,35 +685,15 @@ public class TreeSitterExtractor {
         ctx.pushScope(className, classNode.getId());
         ctx.enterClass(classNode.getId());
 
-        // 处理 EXTENDS
-        int edgesBefore = ctx.getEdges().size();
-        processExtends(node, classNode, ctx, extractor);
-        int extendsAdded = ctx.getEdges().size() - edgesBefore;
-        if (extendsAdded > 0) {
-            logger.trace("[class] {}  added {} EXTENDS edge(s)", depthPrefix(depth), extendsAdded);
-        }
+        // 处理 EXTENDS（仅类和接口支持）
+        processExtendsForType(node, classNode, ctx, extractor, depth);
 
         // 处理 IMPLEMENTS
-        edgesBefore = ctx.getEdges().size();
-        processImplements(node, classNode, ctx, extractor);
-        int implementsAdded = ctx.getEdges().size() - edgesBefore;
-        if (implementsAdded > 0) {
-            logger.trace("[class] {}  added {} IMPLEMENTS edge(s)", depthPrefix(depth), implementsAdded);
-        }
+        processImplementsForType(node, classNode, ctx, extractor, depth);
 
         // 遍历 body 中的成员
         int nodesBefore = ctx.getNodes().size();
-        TSNode body = TreeSitterHelpers.getChildByField(node, extractor.bodyField(), ts);
-        if (!ts.ts_node_is_null(body)) {
-            int childCount = ts.ts_node_named_child_count(body);
-            logger.trace("[class] {}  body has {} named children", depthPrefix(depth), childCount);
-            for (int i = 0; i < childCount; i++) {
-                TSNode child = ts.ts_node_named_child(body, i);
-                visitNode(child, ctx, extractor);
-            }
-        } else {
-            logger.trace("[class] {}  no body field found", depthPrefix(depth));
-        }
+        visitBodyMembers(node, ctx, extractor, depth);
 
         // Lombok 合成成员
         int synthBefore = ctx.getNodes().size();
@@ -422,32 +712,51 @@ public class TreeSitterExtractor {
         ctx.popScope();
     }
 
-    // =========================================================================
-    // Enum
-    // =========================================================================
-
+    /**
+     * 处理枚举声明节点。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li>提取枚举名</li>
+     *   <li>提取可见性和修饰符</li>
+     *   <li>创建节点并推入作用域</li>
+     *   <li>处理 IMPLEMENTS 边（枚举可实现接口）</li>
+     *   <li>遍历 body 子节点，提取枚举常量和方法</li>
+     *   <li>退出作用域</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 输入源码：
+     *   public enum Color { RED, GREEN, BLUE }
+     *
+     * 输出：
+     *   - 节点：ENUM(Color), ENUM_MEMBER(RED), ENUM_MEMBER(GREEN), ENUM_MEMBER(BLUE)
+     *   - 边：CONTAINS(ENUM→ENUM_MEMBER) × 3
+     * </pre>
+     *
+     * @param node AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     */
     private void visitEnum(TSNode node, ExtractorContext ctx, LanguageExtractor extractor) {
         String source = ctx.getSource();
         TreeSitterNative ts = ctx.getTreeSitter();
         int depth = ctx.getScopeDepth();
 
+        // 获取枚举名
         TSNode nameNode = TreeSitterHelpers.getChildByField(node, extractor.nameField(), ts);
-        if (ts.ts_node_is_null(nameNode)) {
-            logger.trace("[enum] {}nameNode is null, skipping", depthPrefix(depth));
-            return;
-        }
-        String enumName = TreeSitterHelpers.getNodeText(nameNode, source, ts);
-        if (enumName == null || enumName.isEmpty()) {
-            logger.trace("[enum] {}enumName is empty, skipping", depthPrefix(depth));
-            return;
-        }
+        String enumName = extractTypeName(nameNode, source, ts, depth, "enum");
+        if (enumName == null) return;
 
+        // 获取可见性和修饰符
         Visibility visibility = extractor.getVisibility(node, ctx);
         boolean isStatic = extractor.isStatic(node, ctx);
         boolean isAbstract = extractor.isAbstract(node, ctx);
 
         logger.debug("[enum] {}创建 ENUM '{}' vis={}", depthPrefix(depth), enumName, visibility);
 
+        // 创建节点
         com.codegraph.core.Node enumNode = ctx.createNode(
             NodeKind.ENUM, enumName, node,
             visibility, isStatic, isAbstract,
@@ -455,36 +764,162 @@ public class TreeSitterExtractor {
         );
         logger.trace("[enum] {}  nodeId={}", depthPrefix(depth), enumNode.getId());
 
+        // 进入枚举作用域
         ctx.pushScope(enumName, enumNode.getId());
 
-        // 处理接口实现
-        int edgesBefore = ctx.getEdges().size();
-        processImplements(node, enumNode, ctx, extractor);
-        int added = ctx.getEdges().size() - edgesBefore;
-        if (added > 0) logger.trace("[enum] {}  added {} IMPLEMENTS edge(s)", depthPrefix(depth), added);
+        // 处理接口实现（枚举可实现接口）
+        processImplementsForType(node, enumNode, ctx, extractor, depth);
 
-        // 遍历 body
+        // 遍历 body 中的成员
         int nodesBefore = ctx.getNodes().size();
-        TSNode body = TreeSitterHelpers.getChildByField(node, extractor.bodyField(), ts);
-        if (!ts.ts_node_is_null(body)) {
-            int childCount = ts.ts_node_named_child_count(body);
-            logger.trace("[enum] {}  body has {} named children", depthPrefix(depth), childCount);
-            for (int i = 0; i < childCount; i++) {
-                TSNode child = ts.ts_node_named_child(body, i);
-                visitNode(child, ctx, extractor);
-            }
-        }
+        visitBodyMembers(node, ctx, extractor, depth);
 
         int bodyNodesAdded = ctx.getNodes().size() - nodesBefore;
         logger.debug("[enum] {}完成: '{}' body中提取了 {} 个成员", depthPrefix(depth), enumName, bodyNodesAdded);
 
+        // 离开枚举作用域
         ctx.popScope();
+    }
+
+    /**
+     * 从名称节点提取类型名称（类名、接口名、枚举名）。
+     *
+     * <p><b>提取逻辑：</b>
+     * <ol>
+     *   <li>检查名称节点是否为空</li>
+     *   <li>从节点提取文本内容</li>
+     *   <li>检查文本是否为空</li>
+     *   <li>返回类型名称或 null（如果提取失败）</li>
+     * </ol>
+     *
+     * @param nameNode 名称节点
+     * @param source 源码内容
+     * @param ts tree-sitter 原生接口
+     * @param depth 当前深度
+     * @param typeLabel 类型标签（用于日志，如 "class", "enum"）
+     * @return 类型名称，如果提取失败返回 null
+     */
+    private String extractTypeName(TSNode nameNode, String source, TreeSitterNative ts, int depth, String typeLabel) {
+        if (ts.ts_node_is_null(nameNode)) {
+            logger.trace("[{}] {}nameNode is null, skipping", typeLabel, depthPrefix(depth));
+            return null;
+        }
+        String typeName = TreeSitterHelpers.getNodeText(nameNode, source, ts);
+        if (typeName == null || typeName.isEmpty()) {
+            logger.trace("[{}] {}name is empty, skipping", typeLabel, depthPrefix(depth));
+            return null;
+        }
+        return typeName;
+    }
+
+    /**
+     * 处理类型声明的 EXTENDS 边（类继承）。
+     *
+     * @param node AST 节点
+     * @param typeEntity 类型实体节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     * @param depth 当前深度
+     */
+    private void processExtendsForType(TSNode node, com.codegraph.core.Node typeEntity,
+                                       ExtractorContext ctx, LanguageExtractor extractor, int depth) {
+        int edgesBefore = ctx.getEdges().size();
+        processExtends(node, typeEntity, ctx, extractor);
+        int extendsAdded = ctx.getEdges().size() - edgesBefore;
+        if (extendsAdded > 0) {
+            logger.trace("[class] {}  added {} EXTENDS edge(s)", depthPrefix(depth), extendsAdded);
+        }
+    }
+
+    /**
+     * 处理类型声明的 IMPLEMENTS 边（接口实现）。
+     *
+     * @param node AST 节点
+     * @param typeEntity 类型实体节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     * @param depth 当前深度
+     */
+    private void processImplementsForType(TSNode node, com.codegraph.core.Node typeEntity,
+                                          ExtractorContext ctx, LanguageExtractor extractor, int depth) {
+        int edgesBefore = ctx.getEdges().size();
+        processImplements(node, typeEntity, ctx, extractor);
+        int implementsAdded = ctx.getEdges().size() - edgesBefore;
+        if (implementsAdded > 0) {
+            logger.trace("[{}] {}  added {} IMPLEMENTS edge(s)",
+                typeEntity.getKind(), depthPrefix(depth), implementsAdded);
+        }
+    }
+
+    /**
+     * 遍历类型体（class body / enum body）中的成员节点。
+     *
+     * <p><b>遍历逻辑：</b>
+     * <ol>
+     *   <li>获取 body 字段节点</li>
+     *   <li>如果 body 不为空，遍历其所有命名子节点</li>
+     *   <li>对每个子节点递归调用 visitNode</li>
+     * </ol>
+     *
+     * @param node 类型声明节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     * @param depth 当前深度
+     */
+    private void visitBodyMembers(TSNode node, ExtractorContext ctx, LanguageExtractor extractor, int depth) {
+        TreeSitterNative ts = ctx.getTreeSitter();
+        TSNode body = TreeSitterHelpers.getChildByField(node, extractor.bodyField(), ts);
+        if (!ts.ts_node_is_null(body)) {
+            int childCount = ts.ts_node_named_child_count(body);
+            logger.trace("[body] {}  body has {} named children", depthPrefix(depth), childCount);
+            for (int i = 0; i < childCount; i++) {
+                TSNode child = ts.ts_node_named_child(body, i);
+                visitNode(child, ctx, extractor);
+            }
+        } else {
+            logger.trace("[body] {}  no body field found", depthPrefix(depth));
+        }
     }
 
     // =========================================================================
     // Method / Constructor
     // =========================================================================
 
+    /**
+     * 处理方法或构造器声明节点。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li>提取方法名（构造器命名为 "&lt;init&gt;"）</li>
+     *   <li>提取可见性和修饰符（static, abstract）</li>
+     *   <li>提取方法签名（参数列表）</li>
+     *   <li>提取返回类型（仅非构造器）</li>
+     *   <li>提取文档注释</li>
+     *   <li>创建方法节点</li>
+     *   <li>进入方法上下文（用于收集 CALLS 边）</li>
+     *   <li>遍历方法体，收集调用引用</li>
+     *   <li>退出方法上下文</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 输入源码：
+     *   public void foo(String name) { bar(); }
+     *
+     * 输出：
+     *   - 节点：METHOD(foo)
+     *     - signature: "void foo(String name)"
+     *     - returnType: "void"
+     *     - visibility: PUBLIC
+     *   - 边：CONTAINS(CLASS→METHOD)
+     *   - 调用引用：bar()（待 resolvePendingReferences 解析）
+     * </pre>
+     *
+     * @param node AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     * @param nodeType 节点类型（"method_declaration" 或 "constructor_declaration"）
+     */
     private void visitMethod(TSNode node, ExtractorContext ctx, LanguageExtractor extractor, String nodeType) {
         String source = ctx.getSource();
         TreeSitterNative ts = ctx.getTreeSitter();
@@ -550,6 +985,32 @@ public class TreeSitterExtractor {
     // Field
     // =========================================================================
 
+    /**
+     * 处理字段声明节点。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li>遍历字段声明的所有子节点</li>
+     *   <li>识别 variable_declarator 类型的子节点（一个字段声明可能包含多个变量）</li>
+     *   <li>提取每个字段的名称、可见性和修饰符</li>
+     *   <li>提取文档注释（共享同一声明的注释）</li>
+     *   <li>为每个变量创建 FIELD 节点</li>
+     * </ol>
+     *
+     * <p><b>多变量声明支持：</b>
+     * <pre>
+     * 输入源码：
+     *   private int a, b, c;  // 单个声明，三个变量
+     *
+     * 输出：
+     *   - 节点：FIELD(a), FIELD(b), FIELD(c)
+     *   - 边：CONTAINS(CLASS→FIELD) × 3
+     * </pre>
+     *
+     * @param node AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     */
     private void visitField(TSNode node, ExtractorContext ctx, LanguageExtractor extractor) {
         String source = ctx.getSource();
         TreeSitterNative ts = ctx.getTreeSitter();
@@ -588,6 +1049,37 @@ public class TreeSitterExtractor {
     // Enum constant
     // =========================================================================
 
+    /**
+     * 处理枚举常量节点。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li>尝试从 name 字段提取常量名</li>
+     *   <li>如果 name 字段为空，直接从节点文本提取</li>
+     *   <li>创建 ENUM_MEMBER 节点（默认 PUBLIC, STATIC）</li>
+     * </ol>
+     *
+     * <p><b>枚举常量特性：</b>
+     * <ul>
+     *   <li>默认可见性：PUBLIC</li>
+     *   <li>默认修饰符：static（枚举常量是类级别的）</li>
+     *   <li>无法为抽象（abstract）</li>
+     * </ul>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 输入源码：
+     *   enum Color { RED, GREEN, BLUE }
+     *
+     * 输出：
+     *   - 节点：ENUM_MEMBER(RED), ENUM_MEMBER(GREEN), ENUM_MEMBER(BLUE)
+     *   - 边：CONTAINS(ENUM→ENUM_MEMBER) × 3
+     * </pre>
+     *
+     * @param node AST 节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     */
     private void visitEnumConstant(TSNode node, ExtractorContext ctx, LanguageExtractor extractor) {
         String source = ctx.getSource();
         TreeSitterNative ts = ctx.getTreeSitter();
@@ -627,6 +1119,31 @@ public class TreeSitterExtractor {
     // Edge generation: EXTENDS
     // =========================================================================
 
+    /**
+     * 处理类继承关系，生成 EXTENDS 边。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li>获取 superclass 字段节点</li>
+     *   <li>提取父类名称（支持泛型类型）</li>
+     *   <li>构建父类的外部节点 ID</li>
+     *   <li>创建 EXTENDS 边（provenance=tree-sitter）</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 输入源码：
+     *   class Foo extends Bar&lt;String&gt; {}
+     *
+     * 输出：
+     *   - 边：EXTENDS(Foo → Bar) （泛型参数被忽略）
+     * </pre>
+     *
+     * @param classNode 类声明 AST 节点
+     * @param classEntity 类实体节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     */
     private void processExtends(TSNode classNode, com.codegraph.core.Node classEntity,
                                 ExtractorContext ctx, LanguageExtractor extractor) {
         TreeSitterNative ts = ctx.getTreeSitter();
@@ -660,6 +1177,31 @@ public class TreeSitterExtractor {
     // Edge generation: IMPLEMENTS
     // =========================================================================
 
+    /**
+     * 处理接口实现关系，生成 IMPLEMENTS 边。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li>获取 interfaces 字段节点</li>
+     *   <li>遍历接口列表（支持 type_list 格式：implements Foo, Bar）</li>
+     *   <li>提取每个接口名称</li>
+     *   <li>为每个接口创建 IMPLEMENTS 边</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 输入源码：
+     *   class Foo implements Bar, Baz {}
+     *
+     * 输出：
+     *   - 边：IMPLEMENTS(Foo → Bar), IMPLEMENTS(Foo → Baz)
+     * </pre>
+     *
+     * @param classNode 类/枚举声明 AST 节点
+     * @param classEntity 类/枚举实体节点
+     * @param ctx 提取上下文
+     * @param extractor 语言提取器配置
+     */
     private void processImplements(TSNode classNode, com.codegraph.core.Node classEntity,
                                    ExtractorContext ctx, LanguageExtractor extractor) {
         TreeSitterNative ts = ctx.getTreeSitter();
@@ -716,6 +1258,28 @@ public class TreeSitterExtractor {
 
     /**
      * 从类型节点提取简单类型名（去掉泛型参数和点分前缀）。
+     *
+     * <p><b>支持的节点类型：</b>
+     * <ol>
+     *   <li><b>type_identifier</b>：直接返回节点文本</li>
+     *   <li><b>superclass</b>：递归查找内部的 type_identifier</li>
+     *   <li><b>generic_type</b>：提取泛型的基础类型名（如 List&lt;String&gt; → List）</li>
+     *   <li><b>type_list</b>：递归提取第一个类型标识符</li>
+     *   <li><b>scoped_identifier</b>：返回完整的限定名（如 java.util.List）</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <table>
+     *   <tr><th>输入节点类型</th><th>源码</th><th>输出</th></tr>
+     *   <tr><td>type_identifier</td><td>Foo</td><td>Foo</td></tr>
+     *   <tr><td>generic_type</td><td>List&lt;String&gt;</td><td>List</td></tr>
+     *   <tr><td>scoped_identifier</td><td>java.util.Map</td><td>java.util.Map</td></tr>
+     * </table>
+     *
+     * @param node AST 节点
+     * @param source 源码内容
+     * @param ts tree-sitter 原生接口
+     * @return 简单类型名称，如果提取失败返回 null
      */
     private String extractSimpleTypeName(TSNode node, String source, TreeSitterNative ts) {
         if (ts.ts_node_is_null(node)) return null;
@@ -990,28 +1554,30 @@ public class TreeSitterExtractor {
 
     /**
      * 在 AST 遍历完成后，解析收集到的方法调用引用，生成 CALLS 边。
-     * 使用启发式匹配：
-     *   1. 在当前文件已提取的 METHOD 节点中精确匹配
-     *   2. 构建 qualified name 并尝试匹配
-     *   3. 对 this.X 和 super.X 进行特殊处理
+     *
+     * <p><b>启发式匹配策略：</b>
+     * <ol>
+     *   <li><b>this.X 调用</b>：在本类中查找方法</li>
+     *   <li><b>无 receiver 调用</b>：查找同名方法，多个匹配时选第一个</li>
+     *   <li><b>receiver.method() 调用</b>：优先匹配导出方法，否则选第一个</li>
+     *   <li><b>super.X 调用</b>：在父类中查找方法</li>
+     * </ol>
+     *
+     * <p><b>未解析引用处理：</b>无法在当前文件内解析的调用会记录为 UnresolvedRef，
+     * 供后续跨文件 resolution 阶段处理。
      */
     public void resolvePendingReferences(ExtractorContext ctx) {
         List<com.codegraph.core.Node> methods = ctx.getNodes().stream()
             .filter(n -> n.getKind() == NodeKind.METHOD)
             .collect(java.util.stream.Collectors.toList());
 
-        // 建立方法名到节点列表的索引（用于快速查找）
-        java.util.Map<String, List<com.codegraph.core.Node>> methodNameIndex = new java.util.HashMap<>();
-        for (com.codegraph.core.Node method : methods) {
-            methodNameIndex.computeIfAbsent(method.getName(), k -> new java.util.ArrayList<>()).add(method);
-        }
+        java.util.Map<String, List<com.codegraph.core.Node>> methodNameIndex = buildNameIndex(methods);
 
         logger.debug("[calls] === 启发式 CALLS 边解析开始 ===");
         logger.debug("[calls] 待解析调用引用: {} 个普通调用, {} 个 super 调用",
             ctx.getCallReferences().size(), ctx.getSuperCallReferences().size());
         logger.debug("[calls] 当前文件已知方法数量: {}", methods.size());
 
-        // 打印已知方法列表（DEBUG 级别）
         if (logger.isDebugEnabled()) {
             for (com.codegraph.core.Node method : methods) {
                 logger.debug("[calls]   方法: {} (qualifiedName={}, exported={})",
@@ -1022,29 +1588,57 @@ public class TreeSitterExtractor {
         int callsEdgesAdded = 0;
 
         // 解析普通方法调用
+        callsEdgesAdded += resolveRegularCallReferences(ctx, methods, methodNameIndex);
+
+        // 解析 super 方法调用
+        callsEdgesAdded += resolveSuperCallReferences(ctx, methods);
+
+        logger.debug("[calls] === 启发式 CALLS 边解析完成: 生成 {} 条边 ===", callsEdgesAdded);
+    }
+
+    /**
+     * 解析普通方法调用引用。
+     *
+     * @param ctx 提取上下文
+     * @param methods 方法节点列表
+     * @param methodNameIndex 方法名索引
+     * @return 成功生成的 CALLS 边数量
+     */
+    private int resolveRegularCallReferences(ExtractorContext ctx,
+            List<com.codegraph.core.Node> methods,
+            java.util.Map<String, List<com.codegraph.core.Node>> methodNameIndex) {
+        int edgesAdded = 0;
         for (ExtractorContext.CallReference ref : ctx.getCallReferences()) {
             logger.debug("[calls] ---- 解析调用: {} → {} (receiver='{}', chained={}, at {}:{})",
                 ref.callerId, ref.calleeName, ref.receiverType, ref.isChained, ref.line, ref.column);
 
             String calleeId = resolveCalleeId(ref, methods, methodNameIndex, ctx);
             if (calleeId != null) {
-                Map<String, Object> metadata = new HashMap<>();
-                metadata.put("provenance", "heuristic");
-                ctx.addEdge(ref.callerId, calleeId, EdgeKind.CALLS, ref.line, ref.column, "heuristic", metadata);
-                callsEdgesAdded++;
+                addHeuristicEdge(ctx, ref.callerId, calleeId, EdgeKind.CALLS,
+                    ref.line, ref.column);
+                edgesAdded++;
                 logger.debug("[calls]   ✓ 解析成功: caller={} → callee={} [heuristic]",
                     ref.callerId, calleeId);
             } else {
-                // 无法在当前文件内解析，记录为 UnresolvedRef 供后续 resolution 阶段处理
-                ctx.getUnresolvedRefs().add(new com.codegraph.resolution.frameworks.UnresolvedRef(
-                    ref.callerId, ref.calleeName, "calls",
-                    ctx.getFilePath(), ref.line, ref.column));
+                recordUnresolvedRef(ctx, ref.callerId, ref.calleeName, "calls",
+                    ref.line, ref.column);
                 logger.debug("[calls]   ✗ 无法解析: {} → {} at {}:{}",
                     ref.callerId, ref.calleeName, ref.line, ref.column);
             }
         }
+        return edgesAdded;
+    }
 
-        // 解析 super 方法调用
+    /**
+     * 解析 super 方法调用引用。
+     *
+     * @param ctx 提取上下文
+     * @param methods 方法节点列表
+     * @return 成功生成的 CALLS 边数量
+     */
+    private int resolveSuperCallReferences(ExtractorContext ctx,
+            List<com.codegraph.core.Node> methods) {
+        int edgesAdded = 0;
         for (ExtractorContext.CallReference ref : ctx.getSuperCallReferences()) {
             logger.debug("[calls] ---- 解析 super 调用: {} → {} (at {}:{})",
                 ref.callerId, ref.calleeName, ref.line, ref.column);
@@ -1052,15 +1646,13 @@ public class TreeSitterExtractor {
             String parentClassId = resolveSuperClassId(ctx);
             if (parentClassId != null) {
                 logger.debug("[calls]   父类 ID: {}", parentClassId);
-                // 构建父类中方法的全限定名
                 String parentMethodQName = parentClassId + "." + ref.calleeName;
                 logger.debug("[calls]   查找父类方法 qualifiedName: {}", parentMethodQName);
                 String calleeId = findMethodByQualifiedName(parentMethodQName, methods);
                 if (calleeId != null) {
-                    Map<String, Object> metadata = new HashMap<>();
-                    metadata.put("provenance", "heuristic");
-                    ctx.addEdge(ref.callerId, calleeId, EdgeKind.CALLS, ref.line, ref.column, "heuristic", metadata);
-                    callsEdgesAdded++;
+                    addHeuristicEdge(ctx, ref.callerId, calleeId, EdgeKind.CALLS,
+                        ref.line, ref.column);
+                    edgesAdded++;
                     logger.debug("[calls]   ✓ SUPER 调用解析成功: {} → {} [heuristic]",
                         ref.callerId, calleeId);
                 } else {
@@ -1070,8 +1662,7 @@ public class TreeSitterExtractor {
                 logger.debug("[calls]   ✗ 无法获取父类 ID（当前类可能没有 EXTENDS 边）");
             }
         }
-
-        logger.debug("[calls] === 启发式 CALLS 边解析完成: 生成 {} 条边 ===", callsEdgesAdded);
+        return edgesAdded;
     }
 
     // =========================================================================
@@ -1080,19 +1671,37 @@ public class TreeSitterExtractor {
 
     /**
      * 解析在 AST 遍历期间收集到的标识符引用，匹配同文件中的
-     * FIELD 和 ENUM_MEMBER 节点，生成 references 边（valueRef）。
+     * FIELD 和 ENUM_MEMBER 节点，生成 REFERENCES 边（valueRef）。
+     *
+     * <p><b>匹配策略：</b>
+     * <ol>
+     *   <li>按标识符名称在同文件的 FIELD 和 ENUM_MEMBER 节点中查找</li>
+     *   <li>去重处理：同一方法对同一目标的多次引用只生成一条边</li>
+     *   <li>生成的边标记为 valueRef（值引用），provenance=heuristic</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 源码：
+     *   class Foo {
+     *       private int x;
+     *       void bar() { System.out.println(x); }
+     *   }
+     *
+     * 生成边：
+     *   REFERENCES(Foo.bar → Foo.x) （valueRef=true）
+     * </pre>
      */
     private void resolveIdentifierReferences(ExtractorContext ctx) {
         List<ExtractorContext.IdentifierRef> idRefs = ctx.getIdentifierRefs();
         if (idRefs.isEmpty()) return;
 
-        // 收集同文件中的 FIELD、ENUM_MEMBER 节点
-        java.util.Map<String, List<com.codegraph.core.Node>> fieldIndex = new java.util.HashMap<>();
-        for (com.codegraph.core.Node node : ctx.getNodes()) {
-            if (node.getKind() == NodeKind.FIELD || node.getKind() == NodeKind.ENUM_MEMBER) {
-                fieldIndex.computeIfAbsent(node.getName(), k -> new java.util.ArrayList<>()).add(node);
-            }
-        }
+        // 收集同文件中的 FIELD、ENUM_MEMBER 节点并建立索引
+        java.util.List<com.codegraph.core.Node> fieldAndEnumNodes = ctx.getNodes().stream()
+            .filter(n -> n.getKind() == NodeKind.FIELD || n.getKind() == NodeKind.ENUM_MEMBER)
+            .collect(java.util.stream.Collectors.toList());
+
+        java.util.Map<String, List<com.codegraph.core.Node>> fieldIndex = buildNameIndex(fieldAndEnumNodes);
 
         if (fieldIndex.isEmpty()) return;
 
@@ -1101,7 +1710,6 @@ public class TreeSitterExtractor {
             idRefs.size(),
             fieldIndex.values().stream().mapToInt(List::size).sum());
 
-        // 去重：避免同一方法多次引用同一目标产生重复边
         java.util.Set<String> addedEdges = new java.util.HashSet<>();
         int refEdgesAdded = 0;
 
@@ -1114,11 +1722,8 @@ public class TreeSitterExtractor {
                 if (addedEdges.contains(edgeKey)) continue;
                 addedEdges.add(edgeKey);
 
-                Map<String, Object> metadata = new HashMap<>();
-                metadata.put("valueRef", true);
-                metadata.put("provenance", "heuristic");
-                ctx.addEdge(ref.methodId, target.getId(), EdgeKind.REFERENCES,
-                    ref.line, ref.column, "heuristic", metadata);
+                addValueReferenceEdge(ctx, ref.methodId, target.getId(),
+                    ref.line, ref.column, ref.identifierName);
                 refEdgesAdded++;
                 logger.debug("[references]   {} → {} (field={})",
                     ref.methodId, target.getId(), ref.identifierName);
@@ -1253,5 +1858,99 @@ public class TreeSitterExtractor {
             }
         }
         return null;
+    }
+
+    // =========================================================================
+    // Common utility methods for reference resolution
+    // =========================================================================
+
+    /**
+     * 构建节点名称到节点列表的索引，用于快速查找同名节点。
+     *
+     * <p><b>索引结构：</b>
+     * <pre>
+     *   Map<String, List<Node>>
+     *   ├── "foo" → [Node("Foo.bar"), Node("Baz.foo")]
+     *   ├── "bar" → [Node("Foo.bar")]
+     *   └── ...
+     * </pre>
+     *
+     * @param nodes 节点列表
+     * @return 名称索引 Map
+     */
+    private java.util.Map<String, List<com.codegraph.core.Node>> buildNameIndex(
+            List<com.codegraph.core.Node> nodes) {
+        java.util.Map<String, List<com.codegraph.core.Node>> index = new java.util.HashMap<>();
+        for (com.codegraph.core.Node node : nodes) {
+            index.computeIfAbsent(node.getName(), k -> new java.util.ArrayList<>()).add(node);
+        }
+        return index;
+    }
+
+    /**
+     * 添加启发式边（provenance=heuristic）。
+     *
+     * <p><b>元数据：</b>设置 provenance 为 "heuristic"，表示该边是通过启发式规则推断的。
+     *
+     * @param ctx 提取上下文
+     * @param sourceId 源节点 ID
+     * @param targetId 目标节点 ID
+     * @param edgeKind 边类型
+     * @param line 行号
+     * @param column 列号
+     */
+    private void addHeuristicEdge(ExtractorContext ctx, String sourceId, String targetId,
+                                  EdgeKind edgeKind, int line, int column) {
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("provenance", "heuristic");
+        ctx.addEdge(sourceId, targetId, edgeKind, line, column, "heuristic", metadata);
+    }
+
+    /**
+     * 添加值引用边（REFERENCES 类型，valueRef=true）。
+     *
+     * <p><b>元数据：</b>
+     * <ul>
+     *   <li>valueRef: true — 表示这是值引用（如字段访问）</li>
+     *   <li>provenance: heuristic — 表示该边是通过启发式规则推断的</li>
+     * </ul>
+     *
+     * @param ctx 提取上下文
+     * @param sourceId 源节点 ID（通常是方法）
+     * @param targetId 目标节点 ID（通常是字段或枚举成员）
+     * @param line 行号
+     * @param column 列号
+     * @param fieldName 字段名称（用于日志）
+     */
+    private void addValueReferenceEdge(ExtractorContext ctx, String sourceId, String targetId,
+                                       int line, int column, String fieldName) {
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("valueRef", true);
+        metadata.put("provenance", "heuristic");
+        ctx.addEdge(sourceId, targetId, EdgeKind.REFERENCES, line, column, "heuristic", metadata);
+    }
+
+    /**
+     * 记录未解析引用，供后续跨文件 resolution 阶段处理。
+     *
+     * <p><b>未解析引用的场景：</b>
+     * <ul>
+     *   <li>调用的方法在当前文件中不存在</li>
+     *   <li>引用的字段/枚举成员在当前文件中不存在</li>
+     *   <li>需要跨文件或跨模块解析的引用</li>
+     * </ul>
+     *
+     * @param ctx 提取上下文
+     * @param callerId 调用者 ID
+     * @param targetName 目标名称
+     * @param refType 引用类型（"calls", "references", "instantiates"）
+     * @param line 行号
+     * @param column 列号
+     */
+    private void recordUnresolvedRef(ExtractorContext ctx, String callerId, String targetName,
+                                     String refType, int line, int column) {
+        ctx.getUnresolvedRefs().add(new com.codegraph.resolution.frameworks.UnresolvedRef(
+            callerId, targetName, refType,
+            ctx.getFilePath(), line, column));
     }
 }

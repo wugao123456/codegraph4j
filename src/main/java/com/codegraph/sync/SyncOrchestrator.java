@@ -141,30 +141,24 @@ public class SyncOrchestrator {
 
                 try {
                     boolean isNew = !trackedFileSet.contains(filePathStr);
-
                     // 计算 hash
                     String contentHash = calculateHash(filePath);
-
                     // 删除旧数据
                     if (!isNew) {
                         queryBuilder.deleteNodesByFile(filePathStr);
                     }
-
                     // 解析文件
                     CodeParser parser = parserFactory.getParser(filePath);
                     if (parser == null) {
                         continue;
                     }
-
                     String content = new String(Files.readAllBytes(filePath));
                     ParseResult parseResult = parser.parseWithEdges(filePath, content);
-
                     // 保存节点
                     for (Node node : parseResult.getNodes()) {
                         queryBuilder.insertNode(node);
                         result.setNodesUpdated(result.getNodesUpdated() + 1);
                     }
-
                     // 保存边
                     for (Edge edge : parseResult.getEdges()) {
                         try {
@@ -177,7 +171,6 @@ public class SyncOrchestrator {
                                     edge.getSource(), edge.getTarget(), e.getMessage());
                         }
                     }
-
                     // 保存未解析引用（供 resolution 阶段处理）
                     if (!parseResult.getUnresolvedRefs().isEmpty()) {
                         queryBuilder.insertUnresolvedRefs(parseResult.getUnresolvedRefs());
