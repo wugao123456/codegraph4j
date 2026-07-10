@@ -12,20 +12,16 @@ public class CodeGraphConfig {
 
     private final String projectPath;
     private final String dbPath;
-    private final String logLevel;
 
     private int searchLimit = 8;
     private int traversalDepth = 3;
     private int maxNodes = 200;
 
+ 
     public CodeGraphConfig(String projectPath, String dbPath) {
-        this(projectPath, dbPath, "INFO");
-    }
-
-    public CodeGraphConfig(String projectPath, String dbPath, String logLevel) {
         this.projectPath = projectPath;
         this.dbPath = dbPath;
-        this.logLevel = logLevel;
+       
     }
 
     // ========== Getters ==========
@@ -46,10 +42,7 @@ public class CodeGraphConfig {
         return new File(base, ".codegraph/codegraph4j.db");
     }
 
-    /** 日志级别 */
-    public String getLogLevel() {
-        return logLevel;
-    }
+
 
     /** 获取日志目录 */
     public File getLogDir() {

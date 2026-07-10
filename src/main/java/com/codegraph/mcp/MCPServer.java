@@ -51,65 +51,10 @@ public class MCPServer {
         this.config = config;
         System.setProperty("codegraph.projectPath", config.getProjectPath());
         this.javaProject = ProjectDetector.isJavaProject(config.getProjectPath());
-        if (this.javaProject) {
-            setupFileLogging();
-        }
+       
     }
 
-    /**
-     * 设置文件日志，输出到 projectPath/.codegraph/logs/codegraph4j-mcp.log。
-     * 在构造函数中调用，确保所有后续日志都写入文件。
-     */
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private void setupFileLogging() {
-        LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
-        Logger rootLogger = context.getLogger(Logger.ROOT_LOGGER_NAME);
-
-        // 如果已存在同名的 MCP_FILE appender，跳过重复创建
-        if (rootLogger.getAppender("MCP_FILE") != null) {
-            return;
-        }
-
-        File logDir = config.getLogDir();
-        logDir.mkdirs();
-
-        String logPath = new File(logDir, "codegraph4j-mcp.log").getAbsolutePath();
-
-        RollingFileAppender fileAppender = new RollingFileAppender();
-        fileAppender.setName("MCP_FILE");
-        fileAppender.setContext(context);
-        fileAppender.setFile(logPath);
-        fileAppender.setAppend(true);
-
-        TimeBasedRollingPolicy rollingPolicy = new TimeBasedRollingPolicy();
-        rollingPolicy.setContext(context);
-        rollingPolicy.setFileNamePattern(logPath + ".%d{yyyy-MM-dd}");
-        rollingPolicy.setMaxHistory(5);
-        rollingPolicy.setParent(fileAppender);
-        rollingPolicy.start();
-
-        fileAppender.setRollingPolicy(rollingPolicy);
-
-        PatternLayoutEncoder encoder = new PatternLayoutEncoder();
-        encoder.setContext(context);
-        encoder.setPattern("%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n");
-        encoder.start();
-
-        fileAppender.setEncoder(encoder);
-        fileAppender.start();
-
-        // 为所有 codegraph 模块添加文件输出
-        for (String loggerName : new String[]{
-            "com.codegraph", "com.codegraph.mcp", "com.codegraph.db",
-            "com.codegraph.parser", "com.codegraph.cli"
-        }) {
-            Logger lg = context.getLogger(loggerName);
-            lg.addAppender(fileAppender);
-            lg.setAdditive(false);
-        }
-
-        rootLogger.addAppender(fileAppender);
-    }
+   
 
     /**
      * 移除控制台 appender，防止日志污染 MCP stdio 通道。

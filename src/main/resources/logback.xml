@@ -40,9 +40,11 @@
     <logger name="com.codegraph" level="INFO" additivity="false">
         <appender-ref ref="STDOUT"/>
     </logger>
-    
+    <logger name="com.codegraph.extraction.tree_sitter" level="TRACE" additivity="false">
+    <appender-ref ref="STDOUT"/>
+    </logger>
     <!-- 根日志级别 -->
-    <root level="WARN">
+    <root level="TRACE">
         <appender-ref ref="STDOUT"/>
     </root>
 </configuration>
