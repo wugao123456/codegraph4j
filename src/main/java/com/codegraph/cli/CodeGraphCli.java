@@ -6,9 +6,6 @@ import org.slf4j.LoggerFactory;
 
 import com.codegraph.cli.commands.*;
 import com.codegraph.config.CodeGraphConfig;
-import com.codegraph.installer.InstallCommand;
-import com.codegraph.installer.UninstallCommand;
-
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder;
@@ -26,9 +23,7 @@ import picocli.CommandLine.Command;
         IndexCommand.class,
         StatusCommand.class,
         SyncCommand.class,
-        ServeCommand.class,
-        InstallCommand.class,
-        UninstallCommand.class
+        ServeCommand.class
     }
 )
 public class CodeGraphCli {
