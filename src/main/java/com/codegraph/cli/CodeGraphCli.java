@@ -36,7 +36,7 @@ public class CodeGraphCli {
     private CodeGraphConfig config;
 
     public static void main(String[] args) {
-        args = new String[]{"index","-p","/Users/wugao-pc/Desktop/Project/codegraph4j","--force"};
+      //  args = new String[]{"index","-p","/Users/wugao-pc/Desktop/Project/codegraph4j","--force"};
         String projectPath = extractProjectPath(args);
 
         CodeGraphCli cli = new CodeGraphCli();
