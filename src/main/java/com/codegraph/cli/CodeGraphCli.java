@@ -63,15 +63,18 @@ public class CodeGraphCli {
     /**
      * 设置文件日志，输出到 projectPath/.codegraph/logs/codegraph4j-mcp.log。
      * 在 main 中调用，确保所有后续日志都写入文件。
+     *
+     * <p>日志目录由 CodeGraphConfig 动态决定，日志包和级别从 logback.xml 读取。
+     * 此方法只追加文件输出目标，不修改任何 logger 的级别。
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void setupFileLogging() {
         if (config == null) return;
 
         LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
-        Logger rootLogger = context.getLogger(Logger.ROOT_LOGGER_NAME);
 
         // 如果已存在同名的 MCP_FILE appender，跳过重复创建
+        Logger rootLogger = context.getLogger(Logger.ROOT_LOGGER_NAME);
         if (rootLogger.getAppender("MCP_FILE") != null) {
             return;
         }
@@ -104,17 +107,13 @@ public class CodeGraphCli {
         fileAppender.setEncoder(encoder);
         fileAppender.start();
 
-        // 为所有 codegraph 模块添加文件输出
-        for (String loggerName : new String[]{
-            "com.codegraph", "com.codegraph.mcp", "com.codegraph.db",
-            "com.codegraph.parser", "com.codegraph.cli"
-        }) {
-            Logger lg = context.getLogger(loggerName);
-            lg.addAppender(fileAppender);
-            lg.setAdditive(false);
+        // 遍历 logback.xml 中所有已配置了 STDOUT appender 的 logger，
+        // 给它们追加文件 appender。包名和日志级别从 logback.xml 读取，此处不硬编码。
+        for (Logger logger : context.getLoggerList()) {
+            if (logger.getAppender("STDOUT") != null) {
+                logger.addAppender(fileAppender);
+            }
         }
-
-        rootLogger.addAppender(fileAppender);
     }
 
 }

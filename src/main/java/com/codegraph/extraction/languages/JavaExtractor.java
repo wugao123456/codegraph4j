@@ -17,87 +17,173 @@ import java.util.*;
 public class JavaExtractor implements LanguageExtractor {
 
     // =========================================================================
-    // Lombok annotation names
+    // Lombok 注解名称集合
+    //
+    // Lombok 在编译期生成 getter/setter/builder 等方法，源码 AST 中不存在这些方法。
+    // 为了在 codegraph 中补全这些隐式方法，需要识别类/字段上的 Lombok 注解，
+    // 并在 synthesizeMembers() 中人工合成对应的 METHOD 节点。
+    //
+    // 支持带包名和不带包名两种写法：
+    //   @Getter          → "Getter"
+    //   @lombok.Getter   → "lombok.Getter"
     // =========================================================================
 
+    /**
+     * 触发 getter 合成的 Lombok 注解。
+     * @Data 和 @Value 同时包含 @Getter + @Setter，所以同时出现在两个集合中。
+     */
     private static final Set<String> LOMBOK_GETTER_ANNOTATIONS = new HashSet<>(Arrays.asList(
         "Getter", "lombok.Getter", "Data", "lombok.Data",
         "Value", "lombok.Value"
     ));
 
+    /**
+     * 触发 setter 合成的 Lombok 注解。
+     */
     private static final Set<String> LOMBOK_SETTER_ANNOTATIONS = new HashSet<>(Arrays.asList(
         "Setter", "lombok.Setter", "Data", "lombok.Data",
         "Value", "lombok.Value"
     ));
 
+    /**
+     * 触发 builder 合成的 Lombok 注解。
+     * @SuperBuilder 是实验性注解，用于继承场景。
+     */
     private static final Set<String> LOMBOK_BUILDER_ANNOTATIONS = new HashSet<>(Arrays.asList(
         "Builder", "lombok.Builder", "SuperBuilder", "lombok.SuperBuilder"
     ));
 
+    // =========================================================================
+    // AST 节点类型 → codegraph 符号类型 映射
+    //
+    // 每个方法返回 tree-sitter-java 中的 AST 节点类型名集合，
+    // TreeSitterExtractor 遍历 AST 时根据这些类型名决定调用哪个处理器。
+    //
+    // 例如 "class_declaration" 对应 Java 源码中的 class 关键字，
+    // "method_declaration" 对应方法定义，等等。
+    //
+    // 映射关系：
+    //   class_declaration          → NodeKind.CLASS
+    //   interface_declaration      → NodeKind.INTERFACE
+    //   enum_declaration           → NodeKind.ENUM
+    //   method_declaration         → NodeKind.METHOD
+    //   field_declaration          → NodeKind.FIELD
+    //   import_declaration         → NodeKind.IMPORT
+    //   package_declaration        → NodeKind.MODULE
+    //   method_invocation          → EdgeKind.CALLS
+    //   field_access               → EdgeKind.REFERENCES
+    // =========================================================================
+
+    /** 类声明节点。示例：class Foo { } */
     @Override
     public Set<String> classTypes() {
         return new HashSet<>(Collections.singletonList("class_declaration"));
     }
 
+    /** 方法和构造器声明。示例：void foo() { }、Foo() { } */
     @Override
     public Set<String> methodTypes() {
         return new HashSet<>(Arrays.asList("method_declaration", "constructor_declaration"));
     }
 
+    /** 接口和注解声明。示例：interface IFoo { }、@interface MyAnno { } */
     @Override
     public Set<String> interfaceTypes() {
         return new HashSet<>(Arrays.asList("interface_declaration", "annotation_type_declaration"));
     }
 
+    /** 枚举声明。示例：enum Color { RED, GREEN } */
     @Override
     public Set<String> enumTypes() {
         return new HashSet<>(Collections.singletonList("enum_declaration"));
     }
 
+    /** 枚举常量。示例：RED、GREEN */
     @Override
     public Set<String> enumMemberTypes() {
         return new HashSet<>(Collections.singletonList("enum_constant"));
     }
 
+    /** 字段声明。示例：private String name; */
     @Override
     public Set<String> fieldTypes() {
         return new HashSet<>(Collections.singletonList("field_declaration"));
     }
 
+    /** 导入声明。示例：import java.util.List; */
     @Override
     public Set<String> importTypes() {
         return new HashSet<>(Collections.singletonList("import_declaration"));
     }
 
+    /** 包声明。示例：package com.example; */
     @Override
     public Set<String> packageTypes() {
         return new HashSet<>(Collections.singletonList("package_declaration"));
     }
 
+    /** 方法调用表达式。示例：obj.foo() → 创建 EdgeKind.CALLS 边 */
     @Override
     public Set<String> methodInvocationTypes() {
         return new HashSet<>(Collections.singletonList("method_invocation"));
     }
 
+    /** super 方法调用。示例：super.foo() */
     @Override
     public Set<String> superMethodTypes() {
         return new HashSet<>(Collections.singletonList("super_method_invocation"));
     }
 
+    /** 字段访问表达式。示例：obj.name → 创建 EdgeKind.REFERENCES 边 */
     @Override
     public Set<String> fieldAccessTypes() {
         return new HashSet<>(Collections.singletonList("field_access"));
     }
 
+    /**
+     * AST 节点中存储名称的字段名。
+     * 
+     * 在 tree-sitter-java 中，class_declaration、method_declaration、field_declaration
+     * 等节点都有一个名为 "name" 的字段，指向 identifier 子节点。
+     * 
+     * TreeSitterExtractor 使用此字段名通过 {@link TreeSitterHelpers#getChildByField}
+     * 获取节点的名称。
+     * 
+     * @return tree-sitter-java AST 中的名称字段名
+     */
     @Override
     public String nameField() { return "name"; }
 
+    /**
+     * AST 节点中存储主体的字段名。
+     * 
+     * 在 tree-sitter-java 中，class_declaration、interface_declaration、
+     * enum_declaration、method_declaration 的主体代码存储在名为 "body" 的字段中。
+     * 
+     * TreeSitterExtractor 使用此字段名获取类/方法体，用于遍历内部成员。
+     * 
+     * @return tree-sitter-java AST 中的主体字段名
+     */
     @Override
     public String bodyField() { return "body"; }
 
+    /**
+     * AST 节点中存储参数列表的字段名。
+     * 
+     * 在 tree-sitter-java 中，method_declaration 的参数列表存储在名为 "parameters" 的字段中。
+     * 
+     * @return tree-sitter-java AST 中的参数字段名
+     */
     @Override
     public String paramsField() { return "parameters"; }
 
+    /**
+     * AST 节点中存储返回类型的字段名。
+     * 
+     * 在 tree-sitter-java 中，method_declaration 的返回类型存储在名为 "type" 的字段中。
+     * 
+     * @return tree-sitter-java AST 中的返回类型字段名
+     */
     @Override
     public String returnField() { return "type"; }
 
