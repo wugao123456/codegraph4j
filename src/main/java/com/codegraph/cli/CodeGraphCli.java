@@ -21,7 +21,6 @@ import picocli.CommandLine.Command;
     subcommands = {
         InitCommand.class,
         IndexCommand.class,
-        StatusCommand.class,
         SyncCommand.class,
         ServeCommand.class
     }
