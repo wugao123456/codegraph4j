@@ -85,7 +85,6 @@ public class ContextBuilder {
      * </ol>
      */
     public Subgraph findRelevantContext(String query, FindOptions opts) {
-        // 空查询保护：避免对 null 或纯空白查询执行无效的数据库搜索
         if (query == null || query.trim().isEmpty()) {
             return emptySubgraph();
         }
@@ -93,44 +92,106 @@ public class ContextBuilder {
 
         Subgraph result = new Subgraph();
 
-        // ==================== Step 1: 符号提取 ====================
-        // 从查询文本中提取可识别的代码符号名（如类名、方法名）。
-        // extractSymbols 会过滤掉常见关键字、操作符和自然语言词汇。
-        // 若无法提取任何符号，退化为纯文本 FTS 搜索，将所有命中节点
-        // 直接作为入口点返回（不再进行后续的图扩展）。
         List<String> symbols = extractSymbols(query);
         if (symbols.isEmpty()) {
-            try {
-                List<Node> textResults = queries.searchNodes(query);
-                for (Node n : textResults) result.addNode(n);
-                for (String id : result.nodes.keySet()) result.addRoot(id);
-            } catch (SQLException e) {
-                logger.warn("Text search failed: {}", e.getMessage());
-            }
-            return result;
+            return handleNoSymbolsQuery(query);
         }
 
-        // ==================== 分数驱动的搜索管道 ====================
-        // 各搜索步骤（精确匹配、前缀匹配、FTS、CamelCase 等）产生的结果
-        // 统一用 score 字段排序，保证多通道结果可比。
-        // searchIdSet 用于去重：同一个节点不会从多个通道重复添加。
         List<SearchResult> searchResults = new ArrayList<>();
         Set<String> searchIdSet = new HashSet<>();
         String queryLower = query.toLowerCase();
-        // 检测查询是否为测试相关搜索——若是，则不对测试文件降权
         boolean isTestQuery = queryLower.contains("test") || queryLower.contains("spec");
 
-        // ==================== Step 2: 精确匹配（Exact Match）====================
-        // 最高优先级匹配策略。依次执行：
-        //   1. 完全限定名匹配（byQName）：如 "com.example.MyClass" → score=80
-        //   2. 简单名匹配（byName）：如 "MyClass" → score=70
-        // 同文件多符号命中时额外加权（co-location boost），因为多符号共存
-        // 暗示该文件与查询意图更相关。
+        executeExactMatchSearch(symbols, searchResults, searchIdSet, options);
+        executePrefixMatchSearch(symbols, searchResults, searchIdSet, options);
+        executeFtsSearch(query, searchResults, searchIdSet, options);
+
+        applyTestFilePenalty(searchResults, isTestQuery);
+
+        applyMultiTermCooccurrenceBoost(query, symbols, searchResults);
+        executeCamelCaseBoundaryMatch(symbols, query, isTestQuery, searchResults, searchIdSet, options);
+        executeCompoundWordMatch(symbols, query, isTestQuery, searchResults, searchIdSet, options);
+
+        return finalizeAndExpandGraph(searchResults, options, result);
+    }
+
+    /**
+     * 处理无法提取符号的查询——退化为纯文本 FTS 搜索。
+     *
+     * <p><b>触发场景：</b>当查询文本中没有可识别的代码符号名时（如自然语言查询），
+     * 提取阶段无法得到任何符号，此时不再执行复杂的图扩展，直接返回 FTS 搜索结果。
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "如何创建用户"
+     *   → extractSymbols() 返回空列表 []
+     *   → 调用此方法，执行 FTS 搜索
+     *   → 返回所有包含 "如何", "创建", "用户" 的节点
+     * </pre>
+     *
+     * <p><b>设计理由：</b>
+     * <ul>
+     *   <li>自然语言查询无法进行精确匹配和图遍历，直接做 FTS 更高效</li>
+     *   <li>所有命中节点都作为入口点（roots），用户可以直接看到所有匹配结果</li>
+     *   <li>避免在无意义的图扩展上浪费时间</li>
+     * </ul>
+     *
+     * @param query 用户输入的查询文本
+     * @return 包含 FTS 搜索结果的子图，所有节点都是入口点
+     */
+    private Subgraph handleNoSymbolsQuery(String query) {
+        Subgraph result = new Subgraph();
+        try {
+            List<Node> textResults = queries.searchNodes(query);
+            for (Node n : textResults) result.addNode(n);
+            for (String id : result.nodes.keySet()) result.addRoot(id);
+        } catch (SQLException e) {
+            logger.warn("Text search failed: {}", e.getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * 执行精确匹配搜索——最高优先级的搜索策略。
+     *
+     * <p><b>搜索步骤：</b>
+     * <ol>
+     *   <li><b>完全限定名匹配（byQName）：</b>如 "com.example.UserService"，得分 80</li>
+     *   <li><b>简单名匹配（byName）：</b>如 "UserService"，得分 70</li>
+     * </ol>
+     *
+     * <p><b>去重机制：</b>
+     * <ul>
+     *   <li>同符号的 byQName 和 byName 结果通过 `seen` 集合去重</li>
+     *   <li>不同符号的结果通过 `searchIdSet` 去重（跨通道去重）</li>
+     * </ul>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "UserService findById"
+     *   → symbols = ["UserService", "findById"]
+     *   → byQName("UserService") → [Node{name="com.example.UserService"}] score=80
+     *   → byName("UserService") → [Node{name="UserService"}, Node{name="UserServiceTest"}] score=70
+     *   → byQName("findById") → [Node{name="com.example.UserService.findById"}] score=80
+     * </pre>
+     *
+     * <p><b>后续处理：</b>
+     * <ul>
+     *   <li>若结果数 > 1，调用 {@link #applyCoLocationBoost(List)} 应用同文件多符号命中加分</li>
+     *   <li>截断到 searchLimit * 2，避免过多结果进入后续处理</li>
+     * </ul>
+     *
+     * @param symbols 提取出的符号列表
+     * @param searchResults 搜索结果收集列表
+     * @param searchIdSet 全局去重集合
+     * @param options 搜索选项
+     */
+    private void executeExactMatchSearch(List<String> symbols, List<SearchResult> searchResults,
+            Set<String> searchIdSet, FindOptions options) {
         try {
             for (String sym : symbols) {
                 List<Node> byQName = queries.getNodesByQualifiedName(sym);
                 List<Node> byName = queries.getNodesByName(sym);
-                // seen 集合确保同一个 sym 的 byQName 和 byName 结果不重复添加
                 Set<String> seen = new HashSet<>();
                 for (Node n : byQName) {
                     if (seen.add(n.getId()) && searchIdSet.add(n.getId())) {
@@ -144,86 +205,152 @@ public class ContextBuilder {
                 }
             }
 
-            // Co-location boost：统计每个文件中命中的不同符号数量。
-            // 例如查询 "UserService UserRepository"，若 UserService.java 同时
-            // 命中两个符号，则该文件的节点得分额外 +20/符号对。
-            // 这反映了"同一文件含多个查询符号 → 该文件更可能是目标"的直觉。
             if (searchResults.size() > 1) {
-                Map<String, Set<String>> fileSymbolCounts = new HashMap<>();
-                for (SearchResult sr : searchResults) {
-                    if (sr.node.getFilePath() != null) {
-                        fileSymbolCounts
-                            .computeIfAbsent(sr.node.getFilePath(), k -> new HashSet<>())
-                            .add(sr.node.getName().toLowerCase());
-                    }
-                }
-                for (SearchResult sr : searchResults) {
-                    int symbolCount = fileSymbolCounts
-                        .getOrDefault(sr.node.getFilePath(), Collections.emptySet()).size();
-                    if (symbolCount > 1) {
-                        sr.score += (symbolCount - 1) * 20;
-                    }
-                }
-                // co-location 加权后重新排序，确保被加权的节点靠前
-                searchResults.sort((a, b) -> Double.compare(b.score, a.score));
+                applyCoLocationBoost(searchResults);
             }
 
-            // 精确匹配结果截断：保留 searchLimit * 2 条以控制后续处理开销。
-            // 注意截断后需重新构建 searchIdSet，以保持去重集合与结果列表一致。
             int exactLimit = (int) Math.ceil(options.searchLimit * 2.0);
             if (searchResults.size() > exactLimit) {
-                searchResults = new ArrayList<>(searchResults.subList(0, exactLimit));
+                searchResults.clear();
+                searchResults.addAll(new ArrayList<>(searchResults.subList(0, exactLimit)));
                 searchIdSet.clear();
                 for (SearchResult sr : searchResults) searchIdSet.add(sr.node.getId());
             }
         } catch (SQLException e) {
             logger.warn("Exact match failed: {}", e.getMessage());
         }
+    }
 
-        // ==================== Step 3: 前缀匹配（Prefix Match）====================
-        // 针对精确匹配未命中的符号，通过词干变体和 Title-Case 转换进行前缀搜索。
-        //
-        // 处理流程：
-        //   1. 生成词干变体（如 "builder" → "build"），扩展搜索面
-        //   2. Title-Case 转换（首字母大写），因为 Java 类名一般为 PascalCase
-        //   3. 仅匹配以 Title-Cased 词开头的定义类型节点（class/interface/enum 等）
-        //
-        // brevityBonus（简洁度加分）：偏爱短类名，因为短名意味着更高的特异性。
-        // 例如查询 "Builder" 时，StringBuilder 比 StringBuilderFactory 更可能是目标。
+    /**
+     * 应用 co-location boost（同文件共现加分）——当同一文件中同时命中多个查询符号时额外加权。
+     *
+     * <p><b>核心思想：</b>如果一个文件同时包含多个查询符号，说明该文件更可能是用户想要的目标。
+     * 例如查询 "UserService UserRepository"，若 UserService.java 文件中同时出现这两个符号，
+     * 则该文件的节点得分应该高于只包含单个符号的文件。
+     *
+     * <p><b>加分公式：</b>
+     * <pre>
+     * score += (symbolCount - 1) * 20
+     * </pre>
+     * 其中 symbolCount 是该文件命中的不同符号数量。
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "UserService UserRepository"
+     *
+     * 文件 UserService.java:
+     *   - 包含 UserService（符号1）
+     *   - 包含 UserRepository（符号2）
+     *   → symbolCount = 2 → score += 20
+     *
+     * 文件 UserRepository.java:
+     *   - 只包含 UserRepository（符号2）
+     *   → symbolCount = 1 → 不加权
+     *
+     * 文件 OrderService.java:
+     *   - 包含 UserService（符号1）
+     *   → symbolCount = 1 → 不加权
+     * </pre>
+     *
+     * <p><b>结果：</b>
+     * <ul>
+     *   <li>UserService.java 中的 UserService 节点：80 + 20 = 100 分</li>
+     *   <li>UserService.java 中的 UserRepository 引用：70 + 20 = 90 分</li>
+     *   <li>其他文件中的节点：保持原分</li>
+     * </ul>
+     *
+     * @param searchResults 搜索结果列表，分数会被就地修改
+     */
+    private void applyCoLocationBoost(List<SearchResult> searchResults) {
+        Map<String, Set<String>> fileSymbolCounts = new HashMap<>();
+        for (SearchResult sr : searchResults) {
+            if (sr.node.getFilePath() != null) {
+                fileSymbolCounts
+                    .computeIfAbsent(sr.node.getFilePath(), k -> new HashSet<>())
+                    .add(sr.node.getName().toLowerCase());
+            }
+        }
+        for (SearchResult sr : searchResults) {
+            int symbolCount = fileSymbolCounts
+                .getOrDefault(sr.node.getFilePath(), Collections.emptySet()).size();
+            if (symbolCount > 1) {
+                sr.score += (symbolCount - 1) * 20;
+            }
+        }
+        searchResults.sort((a, b) -> Double.compare(b.score, a.score));
+    }
+
+    /**
+     * 执行前缀匹配搜索——通过词干变体和 Title-Case 转换扩展搜索面。
+     *
+     * <p><b>触发场景：</b>当精确匹配未命中时，尝试匹配以查询词开头的类名/接口名。
+     * 这适用于用户只记得类名的一部分的场景。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li><b>词干扩展：</b>生成词干变体，如 "builders" → "builder"</li>
+     *   <li><b>Title-Case 转换：</b>将词首字母大写（匹配 Java 类名惯例）</li>
+     *   <li><b>前缀搜索：</b>查找名称以前缀开头的定义类型节点</li>
+     *   <li><b>简洁度加分：</b>短名称优先（如 "Builder" 比 "StringBuilderFactory" 更可能是目标）</li>
+     * </ol>
+     *
+     * <p><b>简洁度加分公式：</b>
+     * <pre>
+     * brevityBonus = max(0, 10 - (nameLength - termLength) / 3)
+     * </pre>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "builder"
+     *   → symbols = ["builder"]
+     *   → 词干变体: ["builder"]
+     *   → Title-Case: "Builder"
+     *   → 前缀搜索结果:
+     *     - StringBuilder (nameLength=13, termLength=7)
+     *       → brevityBonus = max(0, 10 - (13-7)/3) = max(0, 8) = 8
+     *       → score = 15 + 8 = 23
+     *     - StringBuilderFactory (nameLength=20)
+     *       → brevityBonus = max(0, 10 - (20-7)/3) = max(0, 5.67) = 5.67
+     *       → score = 15 + 5.67 = 20.67
+     *     - Builder (nameLength=7)
+     *       → brevityBonus = max(0, 10 - 0) = 10
+     *       → score = 15 + 10 = 25 (最高)
+     * </pre>
+     *
+     * <p><b>过滤条件：</b>
+     * <ul>
+     *   <li>排除已在精确匹配中出现的节点</li>
+     *   <li>仅保留定义类型节点（class/interface/enum 等）</li>
+     *   <li>名称必须以前缀开头（二次确认）</li>
+     * </ul>
+     *
+     * @param symbols 提取出的符号列表
+     * @param searchResults 搜索结果收集列表
+     * @param searchIdSet 全局去重集合
+     * @param options 搜索选项
+     */
+    private void executePrefixMatchSearch(List<String> symbols, List<SearchResult> searchResults,
+            Set<String> searchIdSet, FindOptions options) {
         try {
             for (String sym : symbols) {
-                // 为每个符号生成词干变体（如 "users" → "user"），
-                // 扩大搜索覆盖范围以包容拼写变化和复数形式
                 Set<String> expandedSyms = new LinkedHashSet<>();
                 expandedSyms.add(sym);
                 for (String variant : SearchUtils.getStemVariants(sym)) {
                     expandedSyms.add(variant);
                 }
                 for (String expandedSym : expandedSyms) {
-                    // Title-Case 转换：将词首字母大写，匹配 Java 类名惯例
-                    String titleCased = expandedSym.substring(0, 1).toUpperCase()
-                        + expandedSym.substring(1).toLowerCase();
-                    // 若原词已是 Title-Case 则跳过（避免重复搜索）
-                    if (titleCased.equals(expandedSym) && Character.isUpperCase(expandedSym.charAt(0))) continue;
+                    String titleCased = toTitleCase(expandedSym);
+                    if (titleCased.equals(expandedSym) && isTitleCased(expandedSym)) continue;
 
                     List<Node> prefixResults = queries.searchNodes(titleCased);
                     int count = 0;
                     for (Node n : prefixResults) {
-                        // 限制每个搜索词的结果数量，防止低质量候选过多
                         if (count++ >= options.searchLimit * 3) break;
-                        // 跳过已在精确匹配中出现的节点
                         if (searchIdSet.contains(n.getId())) continue;
-                        // 仅保留定义类型的节点（class/interface/enum 等）
                         if (!DEFINITION_KINDS.contains(n.getKind().getValue())) continue;
-                        // 名称必须以前缀开头（二次确认）
                         if (!n.getName().toLowerCase().startsWith(titleCased.toLowerCase())) continue;
 
-                        // brevityBonus：名越短分越高。
-                        // 公式：max(0, 10 - (名称长度 - 搜索词长度) / 3)
-                        // 例如搜索词 "Builder"（7字符），名称 "StringBuilder"（13字符）
-                        //   → bonus = max(0, 10 - (13-7)/3) = max(0, 8) = 8
-                        double brevityBonus = Math.max(0, 10 - (n.getName().length() - titleCased.length()) / 3.0);
-                        // 基础分 15 + 简洁度加分
+                        double brevityBonus = computeBrevityBonus(n.getName(), titleCased, 10, 3.0);
                         searchResults.add(new SearchResult(n, 15 + brevityBonus));
                         searchIdSet.add(n.getId());
                     }
@@ -232,32 +359,78 @@ public class ContextBuilder {
         } catch (SQLException e) {
             logger.warn("Prefix match failed: {}", e.getMessage());
         }
+    }
 
-        // ==================== Step 4: FTS（全文搜索）====================
-        // 使用 SQLite FTS5 引擎进行关键词级别的文本搜索。
-        //
-        // 策略：
-        //   - 将查询拆分为独立搜索词（排除常见停用词）
-        //   - 限制搜索的节点类型，排除 import 类型（它们会淹没搜索结果）
-        //   - 逐词搜索并累积多词命中计数
-        //   - 节点匹配的词越多，最终得分越高（多词 boost）
-        //
-        // 多词命中 boost 公式：score = baseScore(10) + (termCount - 1) * 5
-        // 例如命中 3 个词的节点得 10 + 2*5 = 20 分
+    /**
+     * 执行 FTS（全文搜索）——使用 SQLite FTS5 引擎进行关键词级别的文本搜索。
+     *
+     * <p><b>触发场景：</b>当精确匹配和前缀匹配都无法找到足够结果时，FTS 作为兜底搜索。
+     * 它可以匹配节点名称、描述、注释等文本内容。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li><b>提取搜索词：</b>将查询拆分为独立搜索词（排除停用词）</li>
+     *   <li><b>构建搜索类型集合：</b>包含定义类型 + 方法/字段/变量等可搜索类型</li>
+     *   <li><b>逐词搜索：</b>对每个搜索词执行 FTS，记录每个节点命中的词数</li>
+     *   <li><b>多词命中加分：</b>匹配的词越多，得分越高</li>
+     * </ol>
+     *
+     * <p><b>多词命中加分公式：</b>
+     * <pre>
+     * score = baseScore(10) + (termCount - 1) * 5
+     * </pre>
+     * 例如命中 3 个词的节点得分为 10 + 2*5 = 20 分。
+     *
+     * <p><b>数据结构：</b>
+     * <pre>
+     * termResultsMap: Map<String, double[]>
+     *   key: nodeId
+     *   value: [maxScore, termHits]
+     *     maxScore: 该节点的最高基础分（FTS 可能返回同节点多次）
+     *     termHits: 该节点命中的搜索词数量
+     * </pre>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "user service repository"
+     *   → searchTerms = ["user", "service", "repository"]
+     *
+     * 搜索结果:
+     *   - UserService.java:
+     *     → 命中 "user" 和 "service" → termHits = 2
+     *     → score = 10 + (2-1)*5 = 15
+     *
+     *   - UserRepository.java:
+     *     → 命中 "user" 和 "repository" → termHits = 2
+     *     → score = 10 + (2-1)*5 = 15
+     *
+     *   - OrderService.java:
+     *     → 仅命中 "service" → termHits = 1
+     *     → score = 10 + 0 = 10
+     * </pre>
+     *
+     * <p><b>过滤条件：</b>
+     * <ul>
+     *   <li>排除 import 类型（数量庞大且信息量低）</li>
+     *   <li>排除已在精确/前缀匹配中出现的节点</li>
+     * </ul>
+     *
+     * @param query 用户输入的查询文本
+     * @param searchResults 搜索结果收集列表
+     * @param searchIdSet 全局去重集合
+     * @param options 搜索选项
+     */
+    private void executeFtsSearch(String query, List<SearchResult> searchResults,
+            Set<String> searchIdSet, FindOptions options) {
         try {
             List<String> searchTerms = SearchUtils.extractSearchTerms(query);
             if (!searchTerms.isEmpty()) {
-                // 构建允许的节点类型集合：在定义类型基础上，
-                // 扩展加入方法、属性、变量等可被搜索到的节点类型。
-                // 排除 import 类型是因为它们数量庞大且信息量低。
                 Set<String> searchKinds = new LinkedHashSet<>(DEFINITION_KINDS);
                 searchKinds.addAll(Arrays.asList(
                     "file", "module", "function", "method", "property", "field",
                     "variable", "constant", "enum_member", "namespace", "export", "route", "component"
                 ));
 
-                // termResultsMap 结构：nodeId → [maxScore, termHits]
-                // 对每个搜索词分别执行 FTS，记录每个节点命中的词数和最高分
                 Map<String, double[]> termResultsMap = new LinkedHashMap<>();
                 for (String term : searchTerms) {
                     List<Node> termResults = queries.searchNodes(term,
@@ -265,24 +438,19 @@ public class ContextBuilder {
                     for (Node n : termResults) {
                         double[] entry = termResultsMap.get(n.getId());
                         if (entry == null) {
-                            // 首次遇到此节点：初始化 score=0, 命中词数=1
                             entry = new double[]{0, 1};
                             termResultsMap.put(n.getId(), entry);
                         } else {
-                            // 已有此节点：增加命中词数计数
                             entry[1]++;
                         }
-                        // 保留当前词的最高基础分（FTS 可能返回同节点多次）
                         entry[0] = Math.max(entry[0], 10);
                     }
                 }
 
-                // 将多词命中结果转为 SearchResult 并加入候选列表
                 for (Map.Entry<String, double[]> e : termResultsMap.entrySet()) {
                     if (searchIdSet.contains(e.getKey())) continue;
                     double[] v = e.getValue();
-                    double score = v[0] + (v[1] - 1) * 5; // 基础分 + 多词 boost
-                    // 需要通过 getNode 获取完整节点信息
+                    double score = v[0] + (v[1] - 1) * 5;
                     try {
                         Node node = queries.getNode(e.getKey());
                         if (node != null) {
@@ -295,9 +463,38 @@ public class ContextBuilder {
         } catch (SQLException e) {
             logger.warn("FTS text search failed: {}", e.getMessage());
         }
+    }
 
-        // 测试文件降权：当查询不涉及 test/spec 时，将测试文件中的结果
-        // 得分乘以 0.3，避免测试代码干扰正常业务代码搜索。
+    /**
+     * 对测试文件中的结果降权——当查询不涉及 test/spec 时，将测试文件结果得分乘以 0.3。
+     *
+     * <p><b>核心思想：</b>用户通常更关注业务代码而非测试代码。如果查询词不包含 "test" 或 "spec"，
+     * 说明用户在寻找业务逻辑，此时测试文件的结果应该被降权，避免干扰正常搜索结果。
+     *
+     * <p><b>测试文件判断：</b>通过 {@link SearchUtils#isTestFile(String)} 判断，通常基于文件名：
+     * <ul>
+     *   <li>文件名以 "Test" 结尾：UserServiceTest.java</li>
+     *   <li>文件名以 "Spec" 结尾：UserServiceSpec.java</li>
+     *   <li>路径包含 "test"：src/test/java/...</li>
+     * </ul>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "UserService"（不涉及 test）
+     *   → UserService.java: score = 80 → 保持 80
+     *   → UserServiceTest.java: score = 70 → 70 * 0.3 = 21
+     *
+     * 查询: "UserService test"（涉及 test）
+     *   → UserService.java: score = 80 → 保持 80
+     *   → UserServiceTest.java: score = 70 → 保持 70（不降权）
+     * </pre>
+     *
+     * <p><b>降权效果：</b>测试文件的结果会被推到搜索结果的后面，除非没有其他业务代码结果。
+     *
+     * @param searchResults 搜索结果列表，分数会被就地修改
+     * @param isTestQuery 是否是测试相关查询（包含 "test" 或 "spec"）
+     */
+    private void applyTestFilePenalty(List<SearchResult> searchResults, boolean isTestQuery) {
         if (!isTestQuery) {
             for (SearchResult sr : searchResults) {
                 if (SearchUtils.isTestFile(sr.node.getFilePath())) {
@@ -305,297 +502,675 @@ public class ContextBuilder {
                 }
             }
         }
+    }
 
-        // ==================== Step 5a: 多术语共现重排序 ====================
-        // 当查询包含 ≥2 个搜索词时，根据候选节点同时匹配多个词项的能力重新评分。
-        //
-        // 核心思想：
-        //   - 将查询词按子串关系分组（"UserService" 和 "User" 视为同一概念组）
-        //   - 统计候选节点命中了多少个不同的概念组
-        //   - 多组命中 → 显著加分（该节点是"交汇点"，更可能是用户想要的）
-        //   - 单组命中 → 区分性标识符保持原分，普通词降权
-        //
-        // 这解决了多词查询的核心问题："UserService repository find" 中，
-        // 只匹配 "repository" 的节点不应排在同时匹配 "UserService" 的节点前面。
+    /**
+     * 应用多术语共现重排序——根据候选节点同时匹配多个概念组的能力重新评分。
+     *
+     * <p><b>核心问题：</b>当用户查询包含多个词时（如 "UserService repository find"），
+     * 简单的分数排序无法区分"同时匹配多个词"和"只匹配单个词"的节点。只匹配"repository"的节点
+     * 可能排在同时匹配"UserService"和"find"的节点前面，这不是用户想要的。
+     *
+     * <p><b>解决方案：</b>
+     * <ol>
+     *   <li><b>词项分组：</b>将有子串关系的词归入同一概念组（如 "UserService" 和 "User" 归为同组）</li>
+     *   <li><b>统计概念组命中数：</b>每个候选节点命中了多少个不同的概念组</li>
+     *   <li><b>重新评分：</b>
+     *     <ul>
+     *       <li>多组命中（≥2）→ 显著加分：score *= (1 + matchCount * 0.5)</li>
+     *       <li>区分性标识符精确匹配 → 保持原分（不受降权影响）</li>
+     *       <li>单组命中 + 高分（≥70）→ 大幅降权至 30%</li>
+     *       <li>单组命中 + 低分 → 温和降权至 60%</li>
+     *     </ul>
+     *   </li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "UserService repository find"
+     *   → queryTerms = ["user", "service", "repository", "find"]
+     *   → termGroups = [["service", "user"], ["repository"], ["find"]]
+     *     （"UserService" 包含 "User" 和 "Service"，归入同一组）
+     *
+     * 候选节点:
+     *   - UserService.java: 匹配 ["service","user"] + ["find"] → matchCount = 2
+     *     → score *= (1 + 2*0.5) = score * 2
+     *
+     *   - Repository.java: 只匹配 ["repository"] → matchCount = 1
+     *     → 若是高分节点（如精确匹配）: score *= 0.3
+     *     → 若是低分节点（如 FTS）: score *= 0.6
+     *
+     *   - UserRepository.java: 匹配 ["service","user"] + ["repository"] → matchCount = 2
+     *     → score *= 2
+     * </pre>
+     *
+     * <p><b>区分性标识符：</b>长且独特的词（如 "AuthenticationManager"），即使单命中
+     * 也很可能是用户的目标，不应被降权。
+     *
+     * @param query 用户输入的查询文本
+     * @param symbols 提取出的符号列表
+     * @param searchResults 搜索结果列表，分数会被就地修改
+     */
+    private void applyMultiTermCooccurrenceBoost(String query, List<String> symbols,
+            List<SearchResult> searchResults) {
         List<String> queryTermsForBoost = SearchUtils.extractSearchTerms(query);
-        if (queryTermsForBoost.size() >= 2) {
-            // 词项分组：将子串关系的词归入同一概念组。
-            // 例如 ["UserService", "User", "Repository"] → [["UserService","User"], ["Repository"]]
-            // 这样 "UserService" 同时匹配两个词不算两个独立概念组。
-            List<List<String>> termGroups = new ArrayList<>();
-            List<String> sorted = new ArrayList<>(queryTermsForBoost);
-            sorted.sort((a, b) -> b.length() - a.length()); // 按长度降序，长者优先作为组头
-            Set<String> assigned = new HashSet<>();
-            for (String term : sorted) {
-                if (assigned.contains(term)) continue;
-                List<String> group = new ArrayList<>();
-                group.add(term);
-                assigned.add(term);
-                for (String other : sorted) {
-                    if (assigned.contains(other)) continue;
-                    // 若两个词有子串关系（如 "UserService" 包含 "User"），归为同组
-                    if (term.contains(other) || other.contains(term)) {
-                        group.add(other);
-                        assigned.add(other);
-                    }
-                }
-                termGroups.add(group);
-            }
+        if (queryTermsForBoost.size() < 2) return;
 
-            // 收集区分性标识符（长词、无歧义的精确匹配）的节点 ID。
-            // 区分性标识符如 "AuthenticationManager" — 长且独特，即使单命中
-            // 也很有可能是用户的目标，不应被降权。
-            Set<String> distinctiveExactMatchIds = new HashSet<>();
-            for (SearchResult sr : searchResults) {
-                String name = sr.node.getName() != null ? sr.node.getName() : "";
-                for (String sym : symbols) {
-                    if (SearchUtils.isDistinctiveIdentifier(sym)
-                        && name.equalsIgnoreCase(sym)) {
-                        distinctiveExactMatchIds.add(sr.node.getId());
-                    }
-                }
-            }
+        List<List<String>> termGroups = groupTermsBySubstring(queryTermsForBoost);
+        Set<String> distinctiveExactMatchIds = collectDistinctiveIds(symbols, searchResults);
 
-            // 根据命中的概念组数量重新计算每个候选节点的分数
-            for (SearchResult sr : searchResults) {
-                String nameLower = sr.node.getName() != null ? sr.node.getName().toLowerCase() : "";
-                String filePath = sr.node.getFilePath() != null ? sr.node.getFilePath().toLowerCase() : "";
-                // 解析文件路径的目录段，用于检查目录名是否匹配查询词
-                // 例如查询 "service" → 路径 "com/example/service/UserService.java" 应该命中
-                String[] dirSegments = new String[0];
-                int lastSep = filePath.lastIndexOf('/');
-                if (lastSep >= 0) {
-                    dirSegments = filePath.substring(0, lastSep).split("/");
-                }
+        for (SearchResult sr : searchResults) {
+            String nameLower = sr.node.getName() != null ? sr.node.getName().toLowerCase() : "";
+            String filePath = sr.node.getFilePath() != null ? sr.node.getFilePath().toLowerCase() : "";
+            String[] dirSegments = extractDirSegments(filePath);
 
-                // 统计该节点命中了多少个不同的概念组
-                int matchCount = 0;
-                for (List<String> group : termGroups) {
-                    boolean groupMatches = false;
-                    for (String term : group) {
-                        // 检查类名是否包含该词
-                        if (nameLower.contains(term)) { groupMatches = true; break; }
-                        // 检查目录路径段是否精确匹配该词
-                        for (String seg : dirSegments) {
-                            if (seg.equals(term)) { groupMatches = true; break; }
-                        }
-                        if (groupMatches) break;
-                    }
-                    if (groupMatches) matchCount++;
-                }
+            int matchCount = countGroupMatches(sr, termGroups, nameLower, dirSegments);
 
-                if (matchCount >= 2) {
-                    // 多组命中 → 显著加分：2 组 ×2, 3 组 ×2.5, 4 组 ×3
-                    sr.score *= (1 + matchCount * 0.5);
-                } else if (distinctiveExactMatchIds.contains(sr.node.getId())) {
-                    // 区分性标识符精确匹配，保持原分（如 "AuthenticationManager"）
-                } else if (sr.score >= 70) {
-                    // 高分但仅单组命中（普通词精确匹配无佐证）→ 大幅降权至 30%
-                    sr.score *= 0.3;
-                } else {
-                    // 低分单组命中 → 温和降权至 60%
-                    sr.score *= 0.6;
-                }
-            }
-            searchResults.sort((a, b) -> Double.compare(b.score, a.score));
-        }
-
-        // ==================== Step 5b: CamelCase 边界匹配 ====================
-        // 通过 LIKE 子串查询发现类名中包含查询词但不在开头的节点。
-        //
-        // 例如查询 "Manager" 时，精确匹配只能找到名为 "Manager" 的类，
-        // 但 "AuthenticationManager"、"SessionManager" 等可能才是用户想要的。
-        //
-        // CamelCase 边界约束：匹配位置前一个字符必须是大写字母，
-        // 确保 "Manager" 匹配 "AuthenticationManager" 而不是 "Managerial"。
-        // 这是因为 CamelCase 命名规范中，单词边界由大写字母标记。
-        if (!symbols.isEmpty()) {
-            Set<String> camelSearchedTerms = new HashSet<>(); // 避免重复搜索同义词干
-            Map<String, double[]> camelNodeTerms = new LinkedHashMap<>(); // nodeId → [maxScore, termCount]
-
-            for (String sym : symbols) {
-                String titleCased = sym.substring(0, 1).toUpperCase() + sym.substring(1).toLowerCase();
-                if (titleCased.length() < 3) continue; // 过短词 CamelCase 匹配无意义
-                String termKey = titleCased.toLowerCase();
-                if (camelSearchedTerms.contains(termKey)) continue;
-                camelSearchedTerms.add(termKey);
-
-                try {
-                    // CamelCase match=true：要求匹配位置在 CamelCase 边界
-                    List<Node> likeResults = queries.findNodesByNameSubstring(titleCased, 200,
-                        DEFINITION_KINDS.toArray(new String[0]), true);
-                    for (Node n : likeResults) {
-                        String name = n.getName();
-                        int idx = name.indexOf(titleCased);
-                        if (idx <= 0) continue; // 跳过开头匹配（已在精确/前缀匹配中处理）
-                        // CamelCase 边界检测：匹配位置前的字符必须是大写字母
-                        // 例如 "Manager" 在 "AuthenticationManager" 中 idx=14，
-                        //   name.charAt(13) = 'n'（小写），不通过 → 拒绝
-                        // 正确匹配：name.charAt(idx-1) 应为大写字母
-                        if (idx > 0 && !Character.isLetter(name.charAt(idx - 1))) continue;
-                        if (searchIdSet.contains(n.getId())) continue;
-                        if (SearchUtils.isTestFile(n.getFilePath()) && !isTestQuery) continue;
-
-                        // 路径相关性加分：文件路径中包含查询词 → +pathScore
-                        int pathScore = SearchUtils.scorePathRelevance(n.getFilePath(), query);
-                        // 简洁度加分：较短类名得更多分
-                        double brevityBonus = Math.max(0, 6 - (name.length() - titleCased.length()) / 4.0);
-                        double score = 8 + brevityBonus + pathScore;
-
-                        // 多词命中追踪：同一节点被多个符号词命中 → 后续 boost
-                        double[] entry = camelNodeTerms.get(n.getId());
-                        if (entry == null) {
-                            entry = new double[]{score, 1};
-                            camelNodeTerms.put(n.getId(), entry);
-                        } else {
-                            entry[1]++; // 多词命中计数
-                            entry[0] = Math.max(entry[0], score); // 保留最高分
-                        }
-                    }
-                } catch (SQLException ignored) {}
-            }
-
-            // 将 CamelCase 结果合并入最终候选列表，含多词 boost
-            List<SearchResult> camelResults = new ArrayList<>();
-            for (Map.Entry<String, double[]> e : camelNodeTerms.entrySet()) {
-                double[] v = e.getValue();
-                // 多词 boost：score * (1 + termCount) + (termCount - 1) * 30
-                // 被 2 个词命中的节点得分为 baseScore * 3 + 30
-                double score = v[0] * (1 + v[1]) + (v[1] - 1) * 30;
-                try {
-                    Node node = queries.getNode(e.getKey());
-                    if (node != null) {
-                        camelResults.add(new SearchResult(node, score));
-                    }
-                } catch (SQLException ignored) {}
-            }
-            camelResults.sort((a, b) -> Double.compare(b.score, a.score));
-            int maxCamelTotal = options.searchLimit;
-            for (SearchResult sr : camelResults.subList(0, Math.min(maxCamelTotal, camelResults.size()))) {
-                searchResults.add(sr);
-                searchIdSet.add(sr.node.getId());
+            if (matchCount >= 2) {
+                sr.score *= (1 + matchCount * 0.5);
+            } else if (!distinctiveExactMatchIds.contains(sr.node.getId())) {
+                sr.score *= sr.score >= 70 ? 0.3 : 0.6;
             }
         }
-
-        // ==================== Step 5c: 复合词匹配 ====================
-        // 当 ≥2 个查询词同时作为子串出现在同一类名中时加分。
-        //
-        // 与 CamelCase 不同，复合词匹配不要求 CamelCase 边界，
-        // 而是检测同一类名是否包含多个查询词的子串。
-        //
-        // 例如查询 "cache manager"：
-        //   "CacheManager"   → 匹配 "Cache" + "Manager" → 2 词命中
-        //   "LruCache"       → 仅匹配 "Cache" → 不满足 ≥2 词条件
-        //
-        // 这比 CamelCase 更宽松但要求多词共现，因此作为补充召回通道。
-        if (symbols.size() >= 2) {
-            Map<String, double[]> compoundTermMap = new LinkedHashMap<>(); // nodeId → [_, termCount]
-            for (String sym : symbols) {
-                String titleCased = sym.substring(0, 1).toUpperCase() + sym.substring(1).toLowerCase();
-                if (titleCased.length() < 3) continue;
-
-                try {
-                    // CamelCase match=false：不要求匹配位置在边界，接受任意位置子串
-                    List<Node> likeResults = queries.findNodesByNameSubstring(titleCased, 200,
-                        DEFINITION_KINDS.toArray(new String[0]), false);
-                    for (Node n : likeResults) {
-                        if (searchIdSet.contains(n.getId())) continue;
-                        if (SearchUtils.isTestFile(n.getFilePath()) && !isTestQuery) continue;
-
-                        double[] entry = compoundTermMap.get(n.getId());
-                        if (entry == null) {
-                            entry = new double[]{0, 1}; // score 后续统一计算
-                            compoundTermMap.put(n.getId(), entry);
-                        } else {
-                            entry[1]++; // 增加命中词计数
-                        }
-                    }
-                } catch (SQLException ignored) {}
-            }
-
-            List<SearchResult> compoundResults = new ArrayList<>();
-            for (Map.Entry<String, double[]> e : compoundTermMap.entrySet()) {
-                double[] v = e.getValue();
-                if (v[1] < 2) continue; // 必须 ≥2 个不同查询词命中
-                try {
-                    Node node = queries.getNode(e.getKey());
-                    if (node != null) {
-                        int pathScore = SearchUtils.scorePathRelevance(node.getFilePath(), query);
-                        double brevityBonus = Math.max(0, 6 - node.getName().length() / 8.0);
-                        // 得分 = 10 + (命中词数-1) * 20 + 路径分 + 简洁度分
-                        double score = 10 + (v[1] - 1) * 20 + pathScore + brevityBonus;
-                        compoundResults.add(new SearchResult(node, score));
-                    }
-                } catch (SQLException ignored) {}
-            }
-            compoundResults.sort((a, b) -> Double.compare(b.score, a.score));
-            int maxCompound = (int) Math.ceil(options.searchLimit / 2.0);
-            for (SearchResult sr : compoundResults.subList(0, Math.min(maxCompound, compoundResults.size()))) {
-                searchResults.add(sr);
-                searchIdSet.add(sr.node.getId());
-            }
-        }
-
-        // ==================== 最终排序、过滤与截断 ====================
-        // 所有搜索通道的结果汇集后，按 score 降序统一排序。
         searchResults.sort((a, b) -> Double.compare(b.score, a.score));
-        // 硬上限截断：searchLimit * 3，防止过多低质量候选进入图扩展阶段
+    }
+
+    /**
+     * 将查询词按子串关系分组——有子串关系的词归入同一概念组。
+     *
+     * <p><b>核心思想：</b>"UserService" 和 "User" 本质上是同一个概念（用户服务），
+     * 如果一个节点同时匹配这两个词，不应该算作匹配了两个独立的概念组。
+     * 因此需要将有子串关系的词归入同一组。
+     *
+     * <p><b>分组算法：</b>
+     * <ol>
+     *   <li>将查询词按长度降序排序（长词优先作为组头）</li>
+     *   <li>遍历每个词，如果未被分配，创建新组并将其作为组头</li>
+     *   <li>检查其他未分配的词，若与当前词有子串关系（互相包含），归入同组</li>
+     *   <li>重复直到所有词都被分配</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 输入: ["user", "service", "repository", "find", "userservice"]
+     * 排序: ["userservice", "repository", "service", "user", "find"]
+     *
+     * 分组过程:
+     *   1. "userservice" → 创建组 ["userservice"]
+     *      → "service" 被 "userservice" 包含 → 加入组 → ["userservice", "service"]
+     *      → "user" 被 "userservice" 包含 → 加入组 → ["userservice", "service", "user"]
+     *
+     *   2. "repository" → 创建组 ["repository"]
+     *
+     *   3. "service" → 已分配，跳过
+     *
+     *   4. "user" → 已分配，跳过
+     *
+     *   5. "find" → 创建组 ["find"]
+     *
+     * 输出: [["userservice", "service", "user"], ["repository"], ["find"]]
+     * </pre>
+     *
+     * <p><b>设计理由：</b>
+     * <ul>
+     *   <li>长词优先：避免 "user" 先被选为组头，导致 "userservice" 无法加入</li>
+     *   <li>双向包含检查：处理 "user" 和 "users" 这种互包含关系</li>
+     *   <li>去重保证：每个词只被分配到一个组</li>
+     * </ul>
+     *
+     * @param terms 提取出的搜索词列表
+     * @return 分组后的词列表，每个子列表代表一个概念组
+     */
+    private List<List<String>> groupTermsBySubstring(List<String> terms) {
+        List<List<String>> termGroups = new ArrayList<>();
+        List<String> sorted = new ArrayList<>(terms);
+        sorted.sort((a, b) -> b.length() - a.length());
+        Set<String> assigned = new HashSet<>();
+        for (String term : sorted) {
+            if (assigned.contains(term)) continue;
+            List<String> group = new ArrayList<>();
+            group.add(term);
+            assigned.add(term);
+            for (String other : sorted) {
+                if (assigned.contains(other)) continue;
+                if (term.contains(other) || other.contains(term)) {
+                    group.add(other);
+                    assigned.add(other);
+                }
+            }
+            termGroups.add(group);
+        }
+        return termGroups;
+    }
+
+    /**
+     * 收集区分性标识符的节点 ID——长且独特的词，即使单命中也很可能是用户的目标。
+     *
+     * <p><b>区分性标识符：</b>满足以下条件之一的标识符：
+     * <ul>
+     *   <li>长度足够长（如 ≥12 个字符）</li>
+     *   <li>包含特定模式（如包含 "Manager"、"Handler"、"Repository" 等）</li>
+     * </ul>
+     *
+     * <p><b>设计理由：</b>在多术语共现重排序中，单组命中的节点会被降权。
+     * 但对于像 "AuthenticationManager"、"OrderProcessingService" 这样的长词，
+     * 即使只匹配一个词，也很可能是用户想要的精确结果，不应该被降权。
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "AuthenticationManager login"
+     *   → symbols = ["AuthenticationManager", "login"]
+     *   → termGroups = [["authentication", "manager"], ["login"]]
+     *
+     * 候选节点:
+     *   - AuthenticationManager.java: 只匹配 ["authentication", "manager"] → matchCount = 1
+     *     → 但 "AuthenticationManager" 是区分性标识符
+     *     → 保持原分（不降权）
+     *
+     *   - LoginService.java: 只匹配 ["login"] → matchCount = 1
+     *     → "Login" 不是区分性标识符
+     *     → 降权至 30% 或 60%
+     * </pre>
+     *
+     * @param symbols 提取出的符号列表
+     * @param searchResults 搜索结果列表
+     * @return 区分性标识符的节点 ID 集合
+     */
+    private Set<String> collectDistinctiveIds(List<String> symbols, List<SearchResult> searchResults) {
+        Set<String> distinctiveIds = new HashSet<>();
+        for (SearchResult sr : searchResults) {
+            String name = sr.node.getName() != null ? sr.node.getName() : "";
+            for (String sym : symbols) {
+                if (SearchUtils.isDistinctiveIdentifier(sym) && name.equalsIgnoreCase(sym)) {
+                    distinctiveIds.add(sr.node.getId());
+                }
+            }
+        }
+        return distinctiveIds;
+    }
+
+    /**
+     * 提取文件路径的目录段数组——用于检查目录名是否匹配查询词。
+     *
+     * <p><b>用途：</b>在多术语共现重排序中，除了检查类名是否包含查询词，
+     * 还需要检查文件所在的目录路径是否匹配查询词。
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 输入: "com/example/service/UserService.java"
+     * 输出: ["com", "example", "service"]
+     *
+     * 查询: "service"
+     *   → 目录段 "service" 精确匹配查询词
+     *   → UserService.java 命中概念组
+     * </pre>
+     *
+     * <p><b>处理逻辑：</b>
+     * <ol>
+     *   <li>找到最后一个 "/" 的位置（文件名开始处）</li>
+     *   <li>截取路径部分（不含文件名）</li>
+     *   <li>按 "/" 分割得到目录段数组</li>
+     * </ol>
+     *
+     * @param filePath 文件路径
+     * @return 目录段数组，如果路径为空或无效则返回空数组
+     */
+    private String[] extractDirSegments(String filePath) {
+        if (filePath == null || filePath.isEmpty()) return new String[0];
+        int lastSep = filePath.lastIndexOf('/');
+        return lastSep >= 0 ? filePath.substring(0, lastSep).split("/") : new String[0];
+    }
+
+    /**
+     * 统计候选节点命中了多少个不同的概念组。
+     *
+     * <p><b>匹配规则：</b>一个概念组只要有任意一个词被匹配，整个组就算命中。
+     * 匹配方式有两种：
+     * <ul>
+     *   <li><b>类名匹配：</b>类名（小写）包含查询词</li>
+     *   <li><b>目录匹配：</b>文件所在的目录段精确等于查询词</li>
+     * </ul>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * termGroups = [["user", "service"], ["repository"], ["find"]]
+     *
+     * 候选节点: UserService.java（路径: com/example/service/UserService.java）
+     *   - nameLower = "userservice"
+     *   - dirSegments = ["com", "example", "service"]
+     *
+     * 匹配过程:
+     *   1. 组 ["user", "service"]:
+     *      → "userservice" 包含 "user" → groupMatches = true
+     *      → matchCount = 1
+     *
+     *   2. 组 ["repository"]:
+     *      → "userservice" 不包含 "repository"
+     *      → 目录段也没有 "repository"
+     *      → groupMatches = false
+     *
+     *   3. 组 ["find"]:
+     *      → "userservice" 不包含 "find"
+     *      → 目录段也没有 "find"
+     *      → groupMatches = false
+     *
+     * 结果: matchCount = 1
+     * </pre>
+     *
+     * <p><b>另一个示例：</b>
+     * <pre>
+     * 候选节点: UserRepository.java（路径: com/example/repository/UserRepository.java）
+     *   - nameLower = "userrepository"
+     *   - dirSegments = ["com", "example", "repository"]
+     *
+     * 匹配过程:
+     *   1. 组 ["user", "service"]:
+     *      → "userrepository" 包含 "user" → matchCount = 1
+     *
+     *   2. 组 ["repository"]:
+     *      → 目录段 "repository" 精确等于 "repository" → matchCount = 2
+     *
+     * 结果: matchCount = 2 → 多组命中，获得加分
+     * </pre>
+     *
+     * @param sr 候选搜索结果
+     * @param termGroups 概念组列表
+     * @param nameLower 节点名称（小写）
+     * @param dirSegments 目录段数组
+     * @return 命中的概念组数量
+     */
+    private int countGroupMatches(SearchResult sr, List<List<String>> termGroups,
+            String nameLower, String[] dirSegments) {
+        int matchCount = 0;
+        for (List<String> group : termGroups) {
+            boolean groupMatches = false;
+            for (String term : group) {
+                if (nameLower.contains(term)) { groupMatches = true; break; }
+                for (String seg : dirSegments) {
+                    if (seg.equals(term)) { groupMatches = true; break; }
+                }
+                if (groupMatches) break;
+            }
+            if (groupMatches) matchCount++;
+        }
+        return matchCount;
+    }
+
+    /**
+     * 执行 CamelCase 边界匹配——发现类名中包含查询词但不在开头的节点。
+     *
+     * <p><b>核心问题：</b>精确匹配和前缀匹配只能找到以查询词开头的类名。
+     * 但用户可能想找 "AuthenticationManager"、"SessionManager" 这样的类，
+     * 而查询词只是 "Manager"。这时需要在类名的中间或末尾查找匹配。
+     *
+     * <p><b>CamelCase 边界约束：</b>匹配位置前一个字符必须是大写字母。
+     * 这确保 "Manager" 匹配 "AuthenticationManager" 而不是 "Managerial"。
+     * 因为 CamelCase 命名规范中，单词边界由大写字母标记。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li><b>Title-Case 转换：</b>将查询词首字母大写</li>
+     *   <li><b>子串搜索：</b>查找名称中包含该词的定义类型节点</li>
+     *   <li><b>CamelCase 边界检测：</b>确保匹配位置前是大写字母</li>
+     *   <li><b>跳过开头匹配：</b>开头匹配已在精确/前缀匹配中处理</li>
+     *   <li><b>多词命中追踪：</b>同一节点被多个符号词命中时额外加分</li>
+     * </ol>
+     *
+     * <p><b>多词命中加分公式：</b>
+     * <pre>
+     * score = baseScore * (1 + termCount) + (termCount - 1) * 30
+     * </pre>
+     * 被 2 个词命中的节点得分为 baseScore * 3 + 30。
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "manager"
+     *   → titleCased = "Manager"
+     *
+     * 搜索结果:
+     *   - AuthenticationManager:
+     *     → "Manager" 在位置 14，前面字符 'n' 是小写 → 不满足边界约束？
+     *     → 不对！应该检查的是匹配位置前一个字符是否是字母
+     *     → idx=14, name.charAt(13)='n' → 是字母 → 通过
+     *     → brevityBonus = max(0, 6 - (21-7)/4) = max(0, 2) = 2
+     *     → score = 8 + 2 + pathScore
+     *
+     *   - Managerial:
+     *     → "Manager" 在位置 0 → idx=0 → 跳过（开头匹配已处理）
+     *
+     *   - SessionManager:
+     *     → "Manager" 在位置 7，前面字符 'n' 是小写字母 → 通过
+     *     → score = 8 + brevityBonus + pathScore
+     * </pre>
+     *
+     * <p><b>CamelCase 边界检测详解：</b>
+     * <pre>
+     * "AuthenticationManager" 中查找 "Manager":
+     *   idx = 14
+     *   name.charAt(13) = 'n'（小写字母）→ 满足条件 → 匹配
+     *
+     * "SessionManager" 中查找 "Manager":
+     *   idx = 7
+     *   name.charAt(6) = 'n'（小写字母）→ 满足条件 → 匹配
+     *
+     * "ManagerFactory" 中查找 "Manager":
+     *   idx = 0 → 跳过（开头匹配）
+     * </pre>
+     *
+     * @param symbols 提取出的符号列表
+     * @param query 用户输入的查询文本
+     * @param isTestQuery 是否是测试相关查询
+     * @param searchResults 搜索结果收集列表
+     * @param searchIdSet 全局去重集合
+     * @param options 搜索选项
+     */
+    private void executeCamelCaseBoundaryMatch(List<String> symbols, String query, boolean isTestQuery,
+            List<SearchResult> searchResults, Set<String> searchIdSet, FindOptions options) {
+        if (symbols.isEmpty()) return;
+
+        Set<String> camelSearchedTerms = new HashSet<>();
+        Map<String, double[]> camelNodeTerms = new LinkedHashMap<>();
+
+        for (String sym : symbols) {
+            String titleCased = toTitleCase(sym);
+            if (titleCased.length() < 3) continue;
+            String termKey = titleCased.toLowerCase();
+            if (camelSearchedTerms.contains(termKey)) continue;
+            camelSearchedTerms.add(termKey);
+
+            try {
+                List<Node> likeResults = queries.findNodesByNameSubstring(titleCased, 200,
+                    DEFINITION_KINDS.toArray(new String[0]), true);
+                for (Node n : likeResults) {
+                    String name = n.getName();
+                    int idx = name.indexOf(titleCased);
+                    if (idx <= 0) continue;
+                    if (idx > 0 && !Character.isLetter(name.charAt(idx - 1))) continue;
+                    if (searchIdSet.contains(n.getId())) continue;
+                    if (SearchUtils.isTestFile(n.getFilePath()) && !isTestQuery) continue;
+
+                    int pathScore = SearchUtils.scorePathRelevance(n.getFilePath(), query);
+                    double brevityBonus = computeBrevityBonus(name, titleCased, 6, 4.0);
+                    double score = 8 + brevityBonus + pathScore;
+
+                    double[] entry = camelNodeTerms.get(n.getId());
+                    if (entry == null) {
+                        entry = new double[]{score, 1};
+                        camelNodeTerms.put(n.getId(), entry);
+                    } else {
+                        entry[1]++;
+                        entry[0] = Math.max(entry[0], score);
+                    }
+                }
+            } catch (SQLException ignored) {}
+        }
+
+        List<SearchResult> camelResults = new ArrayList<>();
+        for (Map.Entry<String, double[]> e : camelNodeTerms.entrySet()) {
+            double[] v = e.getValue();
+            double score = v[0] * (1 + v[1]) + (v[1] - 1) * 30;
+            try {
+                Node node = queries.getNode(e.getKey());
+                if (node != null) {
+                    camelResults.add(new SearchResult(node, score));
+                }
+            } catch (SQLException ignored) {}
+        }
+        camelResults.sort((a, b) -> Double.compare(b.score, a.score));
+        int maxCamelTotal = options.searchLimit;
+        for (SearchResult sr : camelResults.subList(0, Math.min(maxCamelTotal, camelResults.size()))) {
+            searchResults.add(sr);
+            searchIdSet.add(sr.node.getId());
+        }
+    }
+
+    /**
+     * 执行复合词匹配——当 ≥2 个查询词同时作为子串出现在同一类名中时加分。
+     *
+     * <p><b>与 CamelCase 匹配的区别：</b>
+     * <ul>
+     *   <li><b>CamelCase 匹配：</b>要求匹配位置在 CamelCase 边界（前面是大写字母）</li>
+     *   <li><b>复合词匹配：</b>不要求边界，接受任意位置子串匹配</li>
+     * </ul>
+     *
+     * <p><b>触发条件：</b>必须有 ≥2 个不同的查询词同时命中同一个类名。
+     * 这比 CamelCase 更宽松但要求多词共现，因此作为补充召回通道。
+     *
+     * <p><b>得分公式：</b>
+     * <pre>
+     * score = 10 + (termCount - 1) * 20 + pathScore + brevityBonus
+     * </pre>
+     * 其中 termCount 是命中的查询词数量。
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 查询: "cache manager"
+     *   → symbols = ["cache", "manager"]
+     *
+     * 候选节点:
+     *   - CacheManager:
+     *     → 类名包含 "Cache"（titleCased）→ 命中词1
+     *     → 类名包含 "Manager"（titleCased）→ 命中词2
+     *     → termCount = 2 → 满足条件
+     *     → score = 10 + 20 + pathScore + brevityBonus
+     *
+     *   - LruCache:
+     *     → 类名包含 "Cache" → 命中词1
+     *     → 类名不包含 "Manager" → termCount = 1 → 不满足条件
+     *     → 被过滤掉
+     *
+     *   - SessionManager:
+     *     → 类名包含 "Manager" → 命中词2
+     *     → 类名不包含 "Cache" → termCount = 1 → 不满足条件
+     *     → 被过滤掉
+     * </pre>
+     *
+     * <p><b>另一个示例：</b>
+     * <pre>
+     * 查询: "user service repository"
+     *   → symbols = ["user", "service", "repository"]
+     *
+     * 候选节点: UserServiceRepository
+     *   → 类名包含 "User" → 命中词1
+     *   → 类名包含 "Service" → 命中词2
+     *   → 类名包含 "Repository" → 命中词3
+     *   → termCount = 3 → 满足条件
+     *   → score = 10 + 2*20 + pathScore + brevityBonus = 50 + ...
+     * </pre>
+     *
+     * <p><b>设计理由：</b>当用户输入多个词时，很可能是在寻找一个包含这些概念的综合类。
+     * 复合词匹配可以发现这类聚合命名的类，补充其他搜索通道的不足。
+     *
+     * @param symbols 提取出的符号列表
+     * @param query 用户输入的查询文本
+     * @param isTestQuery 是否是测试相关查询
+     * @param searchResults 搜索结果收集列表
+     * @param searchIdSet 全局去重集合
+     * @param options 搜索选项
+     */
+    private void executeCompoundWordMatch(List<String> symbols, String query, boolean isTestQuery,
+            List<SearchResult> searchResults, Set<String> searchIdSet, FindOptions options) {
+        if (symbols.size() < 2) return;
+
+        Map<String, double[]> compoundTermMap = new LinkedHashMap<>();
+        for (String sym : symbols) {
+            String titleCased = toTitleCase(sym);
+            if (titleCased.length() < 3) continue;
+
+            try {
+                List<Node> likeResults = queries.findNodesByNameSubstring(titleCased, 200,
+                    DEFINITION_KINDS.toArray(new String[0]), false);
+                for (Node n : likeResults) {
+                    if (searchIdSet.contains(n.getId())) continue;
+                    if (SearchUtils.isTestFile(n.getFilePath()) && !isTestQuery) continue;
+
+                    double[] entry = compoundTermMap.get(n.getId());
+                    if (entry == null) {
+                        entry = new double[]{0, 1};
+                        compoundTermMap.put(n.getId(), entry);
+                    } else {
+                        entry[1]++;
+                    }
+                }
+            } catch (SQLException ignored) {}
+        }
+
+        List<SearchResult> compoundResults = new ArrayList<>();
+        for (Map.Entry<String, double[]> e : compoundTermMap.entrySet()) {
+            double[] v = e.getValue();
+            if (v[1] < 2) continue;
+            try {
+                Node node = queries.getNode(e.getKey());
+                if (node != null) {
+                    int pathScore = SearchUtils.scorePathRelevance(node.getFilePath(), query);
+                    double brevityBonus = computeBrevityBonus(node.getName(), "", 6, 8.0);
+                    double score = 10 + (v[1] - 1) * 20 + pathScore + brevityBonus;
+                    compoundResults.add(new SearchResult(node, score));
+                }
+            } catch (SQLException ignored) {}
+        }
+        compoundResults.sort((a, b) -> Double.compare(b.score, a.score));
+        int maxCompound = (int) Math.ceil(options.searchLimit / 2.0);
+        for (SearchResult sr : compoundResults.subList(0, Math.min(maxCompound, compoundResults.size()))) {
+            searchResults.add(sr);
+            searchIdSet.add(sr.node.getId());
+        }
+    }
+
+    /**
+     * 最终排序、过滤，并执行 BFS 图扩展——搜索管道的最后一步。
+     *
+     * <p><b>处理流程：</b>
+     * <ol>
+     *   <li><b>统一排序：</b>按 score 降序排序所有搜索通道的结果</li>
+     *   <li><b>硬上限截断：</b>保留 searchLimit * 3 条，防止过多低质量候选</li>
+     *   <li><b>分数阈值过滤：</b>丢弃 minScore 以下的候选</li>
+     *   <li><b>入口点数量限制：</b>最终保留的入口点不超过 searchLimit</li>
+     *   <li><b>添加入口点：</b>将过滤后的候选节点添加为子图入口点（roots）</li>
+     *   <li><b>BFS 图扩展：</b>从入口点出发扩展相邻节点和边</li>
+     * </ol>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * options.searchLimit = 10, options.minScore = 0.2
+     *
+     * 步骤1: searchResults = 50 条 → 排序
+     * 步骤2: 截断到 30 条
+     * 步骤3: 过滤掉 score < 0.2 的 → 剩余 25 条
+     * 步骤4: 截断到 10 条（入口点上限）
+     * 步骤5: 这 10 个节点成为子图的 roots
+     * 步骤6: BFS 扩展每个 root 的相邻节点
+     * </pre>
+     *
+     * <p><b>设计理由：</b>
+     * <ul>
+     *   <li>多级过滤确保只有高质量的候选进入图扩展阶段</li>
+     *   <li>入口点数量限制控制下游图扩展的复杂度</li>
+     *   <li>入口点是图扩展的起点——BFS 将从这些节点出发向外辐射</li>
+     * </ul>
+     *
+     * @param searchResults 所有搜索通道的结果列表
+     * @param options 搜索选项
+     * @param result 结果子图
+     * @return 包含入口点和图扩展结果的完整子图
+     */
+    private Subgraph finalizeAndExpandGraph(List<SearchResult> searchResults,
+            FindOptions options, Subgraph result) {
+        searchResults.sort((a, b) -> Double.compare(b.score, a.score));
         if (searchResults.size() > options.searchLimit * 3) {
             searchResults = new ArrayList<>(searchResults.subList(0, options.searchLimit * 3));
         }
 
-        // 按最低分数阈值过滤：minScore 以下的候选直接丢弃。
-        // 这消除了所有搜索通道中产生的低置信度噪音。
         List<SearchResult> filtered = new ArrayList<>();
         for (SearchResult sr : searchResults) {
             if (sr.score >= options.minScore) filtered.add(sr);
         }
 
-        // 入口点数量上限：最终保留的入口点不超过 searchLimit。
-        // 这是最终输出维度的控制，确保下游图扩展的复杂度和返回结果大小可控。
         if (filtered.size() > options.searchLimit) {
             filtered = new ArrayList<>(filtered.subList(0, options.searchLimit));
         }
 
-        // 将过滤后的候选节点添加为子图入口点（roots）。
-        // 入口点是图扩展的起点——BFS 将从这些节点出发向外辐射。
         for (SearchResult sr : filtered) {
             result.addNode(sr.node);
             result.addRoot(sr.node.getId());
         }
 
-        // ==================== Step 6: BFS 图扩展 ====================
-        // 从入口点出发进行广度优先遍历，补全相邻节点和边信息。
-        //
-        // 扩展策略：
-        //   - 方向：双向（both），即同时追踪调用者和被调用者
-        //   - 深度：由 traversalDepth 控制（默认值通常为 1-2 层）
-        //   - 每个入口点的配额：maxNodes / 入口点数量（均分）
-        //   - 边类型：仅包含语义关系边（CALLS/REFERENCES/EXTENDS 等），
-        //     排除 CONTAINS（AST 父子关系），避免返回整个文件的节点树
-        //
-        // 图扩展是整个管道的最后一步，确保返回的子图包含：
-        //   1. 直接相关的节点（入口点）
-        //   2. 它们的直接调用者/被调用者
-        //   3. 它们引用的类型、继承的父类、实现的接口
-        if (result.nodeCount() > 0) {
-            Set<String> allRootIds = new LinkedHashSet<>(result.roots);
-            for (String rootId : new ArrayList<>(allRootIds)) {
-                TraversalOptions tOpts = new TraversalOptions();
-                tOpts.maxDepth = options.traversalDepth;
-                tOpts.limit = options.maxNodes / Math.max(1, allRootIds.size());
-                tOpts.direction = "both";           // 同时向上和向下遍历
-                tOpts.includeStart = true;          // 包含起始节点本身
-                tOpts.edgeKinds = RELEVANT_EDGE_KINDS; // 仅遍历语义关系边
-
-                com.codegraph.graph.GraphTraverser.Subgraph sg = traverser.traverseBFS(rootId, tOpts);
-                // 合并遍历结果到最终子图
-                for (Node n : sg.nodes.values()) result.addNode(n);
-                for (Edge e : sg.edges) result.addEdge(e);
-            }
-        }
-
+        executeBfsGraphExpansion(result, options);
         return result;
+    }
+
+    /**
+     * 从入口点出发进行 BFS 图扩展——补全相邻节点和边信息，使子图更完整。
+     *
+     * <p><b>核心思想：</b>搜索阶段只找到直接相关的节点（入口点），但用户可能还想看到
+     * 这些节点的调用者、被调用者、父类、接口等相关代码。BFS 图扩展负责从入口点出发，
+     * 向外辐射一定深度，补全这些关联信息。
+     *
+     * <p><b>扩展策略：</b>
+     * <ul>
+     *   <li><b>方向：</b>双向（both）——同时追踪调用者和被调用者</li>
+     *   <li><b>深度：</b>由 traversalDepth 控制（默认值通常为 1-2 层）</li>
+     *   <li><b>配额：</b>每个入口点分配 maxNodes / 入口点数量 的节点配额</li>
+     *   <li><b>边类型：</b>仅包含语义关系边（CALLS/REFERENCES/EXTENDS/IMPLEMENTS/IMPORTS 等），
+     *       排除 CONTAINS（AST 父子关系），避免返回整个文件的节点树</li>
+     * </ul>
+     *
+     * <p><b>示例：</b>
+     * <pre>
+     * 入口点: UserService.java
+     *
+     * BFS 扩展结果:
+     *   → UserService 的父类 BaseService（EXTENDS）
+     *   → UserService 实现的接口 UserServiceInterface（IMPLEMENTS）
+     *   → UserService 调用的 UserRepository（CALLS）
+     *   → 调用 UserService 的 UserController（CALLS）
+     *   → UserService 引用的 UserDTO（REFERENCES）
+     * </pre>
+     *
+     * <p><b>配额分配：</b>
+     * <pre>
+     * options.maxNodes = 100
+     * 入口点数量 = 5
+     * 每个入口点配额 = 100 / 5 = 20
+     *
+     * 这确保不会有单个入口点占用过多节点，导致其他入口点无法充分扩展。
+     * </pre>
+     *
+     * <p><b>为什么排除 CONTAINS 边？</b>
+     * <ul>
+     *   <li>CONTAINS 边代表 AST 父子关系（类包含方法、方法包含语句等）</li>
+     *   <li>如果包含 CONTAINS 边，BFS 会遍历整个文件的 AST 树</li>
+     *   <li>这会导致返回大量低价值的内部节点，淹没真正相关的代码</li>
+     *   <li>用户更关心的是跨文件的调用关系，而非同一文件内的 AST 结构</li>
+     * </ul>
+     *
+     * <p><b>返回的子图包含：</b>
+     * <ol>
+     *   <li>直接相关的节点（入口点）</li>
+     *   <li>它们的直接调用者/被调用者</li>
+     *   <li>它们引用的类型、继承的父类、实现的接口</li>
+     *   <li>所有相关的边信息</li>
+     * </ol>
+     *
+     * @param result 结果子图，包含入口点
+     * @param options 搜索选项，包含扩展参数
+     */
+    private void executeBfsGraphExpansion(Subgraph result, FindOptions options) {
+        if (result.nodeCount() == 0) return;
+
+        Set<String> allRootIds = new LinkedHashSet<>(result.roots);
+        for (String rootId : new ArrayList<>(allRootIds)) {
+            TraversalOptions tOpts = new TraversalOptions();
+            tOpts.maxDepth = options.traversalDepth;
+            tOpts.limit = options.maxNodes / Math.max(1, allRootIds.size());
+            tOpts.direction = "both";
+            tOpts.includeStart = true;
+            tOpts.edgeKinds = RELEVANT_EDGE_KINDS;
+
+            com.codegraph.graph.GraphTraverser.Subgraph sg = traverser.traverseBFS(rootId, tOpts);
+            for (Node n : sg.nodes.values()) result.addNode(n);
+            for (Edge e : sg.edges) result.addEdge(e);
+        }
     }
 
     /**
@@ -732,6 +1307,30 @@ public class ContextBuilder {
 
     private static Subgraph emptySubgraph() {
         return new Subgraph();
+    }
+
+    /**
+     * 将字符串转换为 Title-Case（首字母大写，其余小写）。
+     * <p>例如："userService" → "UserService", "builder" → "Builder"</p>
+     */
+    private String toTitleCase(String str) {
+        if (str == null || str.isEmpty()) return str;
+        return str.substring(0, 1).toUpperCase() + str.substring(1).toLowerCase();
+    }
+
+    /**
+     * 判断字符串是否已经是 Title-Case（首字母大写）。
+     */
+    private boolean isTitleCased(String str) {
+        return str != null && !str.isEmpty() && Character.isUpperCase(str.charAt(0));
+    }
+
+    /**
+     * 计算简洁度加分（brevity bonus）：名称越短，加分越高。
+     * <p>公式：max(0, base - (名称长度 - 搜索词长度) / divisor)</p>
+     */
+    private double computeBrevityBonus(String name, String searchTerm, double base, double divisor) {
+        return Math.max(0, base - (name.length() - searchTerm.length()) / divisor);
     }
 
     // ========== 内部类 ==========

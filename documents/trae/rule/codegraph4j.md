@@ -18,16 +18,7 @@ alwaysApply: true
 
 在查询中指定文件名或符号名即可读取其当前源码。
 
-### 与 SearchCodebase 的对比
 
-| 场景 | 推荐工具 | 原因 |
-|-----|---------|------|
-| **理解代码结构**（调用关系、继承链、数据流） | `codegraph_explore` | 基于 AST 解析，能理解代码语义 |
-| **查找符号定义位置** | `codegraph_explore` | 直接返回定义及其上下文 |
-| **追踪调用路径** | `codegraph_explore` | 支持动态分派、回调等 grep 无法追踪的关系 |
-| **概览代码区域** | `codegraph_explore` | 一次调用返回相关源码 + 调用图 |
-| **纯文本内容搜索**（配置、文档） | `SearchCodebase` / `Grep` | 适用于非代码文件或文本匹配 |
-| **确认 。CodeGraph4J 未覆盖的细节** | `Read` / `Grep` | 仅在 codegraph4j 无法提供时使用 |
 
 ### 使用规则
 
