@@ -9,6 +9,9 @@ import com.codegraph.db.QueryBuilder;
 
 import com.codegraph.mcp.MCPTransport.ToolCallResult;
 import com.codegraph.utils.MarkdownUtils;
+import com.fasterxml.jackson.databind.util.JSONPObject;
+
+import netscape.javascript.JSObject;
 
 public class MCPToolHandlerTest {
 
@@ -32,7 +35,7 @@ public class MCPToolHandlerTest {
         Map<String, Object> args1 = new HashMap<>();
         args1.put("query", "codegraph_explore 索2引流程的完整调用链和核心步骤");
         ToolCallResult result = toolHandler.execute("codegraph_explore", args1);
-        System.out.println(result);
+        System.out.println(result.content);
         MarkdownUtils.writeMarkdownToFile(result, "codegraph_explore", args1.get("query").toString(), projectPath);
 
         try {

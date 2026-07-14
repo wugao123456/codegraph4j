@@ -181,7 +181,7 @@ public class ExploreTool extends BaseTool {
         // Step 3: 图感知粘合——补全同文件内的调用关系
         Set<String> glueNodeIds = applyGraphAwareGlue(subgraph);
 
-        // Step 4: 命名符号播种——按符号名称精确匹配补充节点
+        // Step 4: 命名符号播种—qname name 所有字段模糊匹 不受 searchLimit 限制（最多40个）  
         Set<String> namedSeedIds = seedNamedSymbols(input, subgraph);
 
         // Steps 5-7: 文件分组评分 + RWR 相关性 + 排序
@@ -339,23 +339,37 @@ public class ExploreTool extends BaseTool {
      * @return 被播种加入的节点 ID 集合（最多 40 个）
      */
     private Set<String> seedNamedSymbols(ExploreInput input, Subgraph subgraph) {
+        // namedSeedIds：收集精确匹配到的节点ID，用于后续评分时作为"入口点"（+50分）
         Set<String> namedSeedIds = new LinkedHashSet<>();
+        // 从查询文本中提取符号（如 "UserService login" → ["UserService", "login"]）
         List<String> tokens = input.ctxBuilder.extractSymbols(input.query);
 
+        // 遍历每个符号，执行三级匹配级联
         for (String token : tokens) {
-            if (namedSeedIds.size() >= 40) break;  // 防止播种过多节点
+            // 双重保护：防止播种过多节点（最多40个），避免子图过大影响性能
+            if (namedSeedIds.size() >= 40) break;
 
             try {
-                // 三级匹配级联：完全限定名 → 简单名 → FTS
+                // 三级匹配级联：优先级从高到低
+                // 1. 完全限定名匹配（最精确，如 "com.example.UserService"）
+                // 2. 简单名匹配（次精确，如 "UserService"）
+                // 3. FTS全文搜索（兜底，搜索 name/qualified_name/docstring）
+                // 这样可以尽可能找到所有与符号相关的节点
                 List<Node> results = queries.getNodesByQualifiedName(token);
                 if (results.isEmpty()) results = queries.getNodesByName(token);
                 if (results.isEmpty()) results = queries.searchNodes(token);
 
+                // 遍历匹配结果，补充到子图中
                 for (Node n : results) {
+                    // 双重保护：再次检查数量限制
                     if (namedSeedIds.size() >= 40) break;
+                    // 如果节点不在子图中，补充进去
+                    // Step 2 的 findRelevantContext 有 searchLimit 限制，可能遗漏精确匹配节点
+                    // 这里不受 searchLimit 限制，可以补充这些遗漏的节点
                     if (!subgraph.nodes.containsKey(n.getId())) {
                         subgraph.addNode(n);
                     }
+                    // 添加到命名种子集合，后续评分时会作为入口点（+50分）
                     namedSeedIds.add(n.getId());
                 }
             } catch (SQLException ignored) {}
@@ -363,6 +377,7 @@ public class ExploreTool extends BaseTool {
 
         logger.info("[codegraph_explore] Step 4 - 命名符号播种完成: tokens={}, namedSeeds={}",
             tokens.size(), namedSeedIds.size());
+        // 返回命名种子ID集合，用于 scoreGroupAndRankFiles 中的入口点评分
         return namedSeedIds;
     }
 
@@ -414,7 +429,7 @@ public class ExploreTool extends BaseTool {
         // Step 5: 节点按文件分组 + 评分
         FileGrouping grouping = groupAndScoreFiles(subgraph, namedSeedIds, query, budget);
 
-        // Step 6: RWR 图相关性 + 门控过滤
+        // Step 6: RWR 图相关性 + 过滤 import/export 件路径分组累计得分
         GraphRelevance relevance = computeGraphRelevance(subgraph, grouping.entryNodeIds,
             grouping.relevantFiles, query);
 
@@ -465,22 +480,36 @@ public class ExploreTool extends BaseTool {
      */
     private FileGrouping groupAndScoreFiles(Subgraph subgraph, Set<String> namedSeedIds,
             String query, ExploreOutputBudget budget) {
+        // fileGroups：按文件路径分组，每个组包含该文件中的所有节点和累积得分
         Map<String, FileGroup> fileGroups = new LinkedHashMap<>();
 
+        // entryNodeIds：入口节点集合 = 搜索根节点(subgraph.roots) + 命名播种节点(namedSeedIds)
+        // 这些节点是搜索的起点，后续评分会优先考虑
         Set<String> entryNodeIds = new LinkedHashSet<>();
         for (String id : subgraph.roots) entryNodeIds.add(id);
         entryNodeIds.addAll(namedSeedIds);
 
+        // connectedToEntry：与入口节点直接相连的节点集合（调用者或被调用者）
+        // 通过图遍历找到所有与入口节点有直接边关系的节点
         Set<String> connectedToEntry = connectedToEntry(subgraph, entryNodeIds);
 
+        // 遍历子图中所有节点，按文件分组并计算得分
         for (Node n : subgraph.nodes.values()) {
+            // 过滤掉 import/export 节点（这些是引用，不是核心逻辑）
             if (n.getKind() == NodeKind.IMPORT || n.getKind() == NodeKind.EXPORT) continue;
+            // 过滤掉配置文件的叶子节点（如 JSON/YAML 中的键值对，信息量低）
             if (isConfigLeafNode(n)) continue;
 
+            // 获取节点所在文件路径，按文件路径分组
             String filePath = n.getFilePath() != null ? n.getFilePath() : "";
             FileGroup group = fileGroups.computeIfAbsent(filePath, k -> new FileGroup());
             group.nodes.add(n);
 
+            // 四级评分体系：节点越接近入口点，得分越高
+            // 1. 命名播种节点（精确匹配）→ +50分（最高优先级）
+            // 2. 其他入口节点（搜索根节点）→ +10分（次高优先级）
+            // 3. 与入口节点直接相连的节点 → +3分（相关节点）
+            // 4. 其他节点 → +1分（兜底）
             if (namedSeedIds.contains(n.getId())) {
                 group.score += 50;
             } else if (entryNodeIds.contains(n.getId())) {
@@ -492,22 +521,28 @@ public class ExploreTool extends BaseTool {
             }
         }
 
+        // 筛选相关文件：得分 >= 3 的文件才保留
+        // 这意味着至少需要有一个"相关节点"（+3分）或多个"兜底节点"才能进入候选
         List<Map.Entry<String, FileGroup>> relevantFiles = new ArrayList<>();
         for (Map.Entry<String, FileGroup> e : fileGroups.entrySet()) {
             if (e.getValue().score >= 3) relevantFiles.add(e);
         }
 
+        // 可选过滤：排除低价值文件（如配置文件、测试辅助文件等）
+        // 但如果查询涉及测试，则不过滤（因为用户可能确实想找测试相关文件）
         int beforeFilterSize = relevantFiles.size();
         if (budget.excludeLowValueFiles && !mentionsTests(query)) {
             List<Map.Entry<String, FileGroup>> nonLow = new ArrayList<>();
             for (Map.Entry<String, FileGroup> e : relevantFiles) {
                 if (!isLowValue(e.getKey())) nonLow.add(e);
             }
+            // 只有在过滤后仍有至少2个文件时才替换，避免过滤后结果过少
             if (nonLow.size() >= 2) relevantFiles = nonLow;
         }
         logger.info("[codegraph_explore] Step 5 - 文件分组评分完成: fileGroups={}, relevantFiles={}, 过滤掉={}",
             fileGroups.size(), relevantFiles.size(), beforeFilterSize - relevantFiles.size());
 
+        // 返回文件分组结果，包含完整分组、入口节点集合和相关文件列表
         return new FileGrouping(fileGroups, entryNodeIds, relevantFiles);
     }
 
@@ -806,48 +841,63 @@ public class ExploreTool extends BaseTool {
         lines.add("");
 
         ContextBuilder.FlowInfo flow = input.ctxBuilder.buildFlowFromNamedSymbols(query);
-        Set<String> pathNodeIds = flow.pathNodeIds;
-        Set<String> namedNodeIds = flow.namedNodeIds;
-        Set<String> uniqueNamedIds = flow.uniqueNamedNodeIds;
+        Set<String> pathNodeIds = flow.pathNodeIds;       // 查询路径上的关键节点
+        Set<String> namedNodeIds = flow.namedNodeIds;     // 用户查询中提到的符号节点
+        Set<String> uniqueNamedIds = flow.uniqueNamedNodeIds;  // 去重后的命名节点
 
-        int totalChars = joinStrings(lines).length();
-        int filesIncluded = 0;
-        boolean anyTrimmed = false;
+        // 初始化统计变量
+        int totalChars = joinStrings(lines).length();  // 当前输出总字符数
+        int filesIncluded = 0;                         // 已输出的文件数
+        boolean anyTrimmed = false;                    // 是否有文件被裁剪
 
-        Map<String, Boolean> siblingSuperCache = new HashMap<>();
-        Map<String, Boolean> superManyCache = new HashMap<>();
-        final int MIN_SIBLINGS = 3;
+        // 初始化多态判断缓存，避免重复查询数据库
+        Map<String, Boolean> siblingSuperCache = new HashMap<>();  // 父类型多态性缓存
+        Map<String, Boolean> superManyCache = new HashMap<>();     // 超类型多态性缓存
+        final int MIN_SIBLINGS = 3;  // 判断多态的最小兄弟数量阈值
 
+        // 遍历排序后的相关文件，按优先级依次渲染
         for (Map.Entry<String, FileGroup> entry : ranking.relevantFiles) {
+            // 文件数量达到上限，停止处理
             if (filesIncluded >= maxFiles) break;
 
+            // 获取文件路径和对应的节点分组
             String filePath = entry.getKey();
             FileGroup group = entry.getValue();
 
+            // 判断文件是否"必要"：包含入口点、流程节点或命名节点
+            // 非必要文件在预算超过90%时会被跳过，优先保证核心文件输出
             boolean fileNecessary = isFileNecessary(group.nodes, ranking.entryNodeIds, pathNodeIds, namedNodeIds);
             if (!fileNecessary && totalChars > budget.maxOutputChars * 0.9) continue;
 
+            // 从磁盘读取文件内容（实时读取，保证内容最新）
             List<String> fileLines = readFileLines(filePath);
-            if (fileLines == null) continue;
+            if (fileLines == null) continue;  // 文件读取失败，跳过
 
+            // 根据文件扩展名检测编程语言，用于代码块语法高亮
             String lang = detectLanguage(filePath);
 
+            // 根据文件特征和查询上下文确定渲染模式
+            // SKELETON: 骨架模式，WHOLE_FILE: 完整文件，CLUSTERED: 聚类模式
             RenderMode mode = determineRenderMode(group.nodes, fileLines, pathNodeIds,
                 namedNodeIds, uniqueNamedIds, ranking.centralFiles.contains(filePath),
                 siblingSuperCache, superManyCache, MIN_SIBLINGS, budget);
 
+            // 渲染单个文件段，返回结果数组：[状态码, 字符数]
+            // 状态码: 0=跳过, 1=成功输出, -1=被裁剪
             int[] result = renderFileSection(lines, filePath, group.nodes, fileLines, lang,
                 mode, pathNodeIds, namedNodeIds, uniqueNamedIds, subgraph, ranking.entryNodeIds,
                 glueNodeIds, budget, fileNecessary, totalChars);
 
+            // 更新统计信息
             if (result[0] == 1) {
-                totalChars += result[1];
-                filesIncluded++;
+                totalChars += result[1];  // 累加输出字符数
+                filesIncluded++;          // 计数+1
             } else if (result[0] == -1) {
-                anyTrimmed = true;
+                anyTrimmed = true;        // 标记有文件被裁剪
             }
         }
 
+        // 返回是否有文件因预算限制被裁剪
         return anyTrimmed;
     }
 

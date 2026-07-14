@@ -141,6 +141,23 @@ public class SearchUtils {
         Set<String> tokens = new LinkedHashSet<>();
 
         // 1. 提取复合标识符（CamelCase/PascalCase）
+        // COMPOUND_PATTERN 匹配两种模式：
+        //   - 模式1: 小写开头 + 多个大写字母分隔的单词（CamelCase）
+        //     如 "userService", "getUserId", "parseJsonString"
+        //   - 模式2: 大写开头 + 多个大写字母分隔的单词（PascalCase）
+        //     如 "UserService", "UserId", "JsonParser"
+        //
+        // 示例：
+        //   查询: "UserService login"
+        //     → 匹配 "UserService" → tokens.add("userservice")
+        //
+        //   查询: "getUserId method"
+        //     → 匹配 "getUserId" → tokens.add("getuserid")
+        //
+        //   查询: "parseJsonString"
+        //     → 匹配 "parseJsonString" → tokens.add("parsejsonstring")
+        //
+        // 长度限制 ≥3：过滤掉 "Id", "URL" 等过短的复合词
         java.util.regex.Matcher m = COMPOUND_PATTERN.matcher(query);
         while (m.find()) {
             String word = m.group(1);
@@ -149,7 +166,26 @@ public class SearchUtils {
             }
         }
 
-        // 2. 提取 snake_case
+        // 2. 提取 snake_case / SCREAMING_SNAKE_CASE
+        // SNAKE_PATTERN 匹配以下划线分隔的标识符：
+        //   - snake_case: 小写字母 + 下划线 + 小写字母，如 "user_service", "get_user_id"
+        //   - SCREAMING_SNAKE_CASE: 大写字母 + 下划线 + 大写字母，如 "MAX_SIZE", "DEFAULT_CONFIG"
+        //   - 混合大小写: 如 "User_Service", "parse_JSON"
+        //
+        // 示例：
+        //   查询: "user_service login"
+        //     → 匹配 "user_service" → tokens.add("user_service")
+        //
+        //   查询: "MAX_SIZE constant"
+        //     → 匹配 "MAX_SIZE" → tokens.add("max_size")
+        //
+        //   查询: "get_user_id method"
+        //     → 匹配 "get_user_id" → tokens.add("get_user_id")
+        //
+        //   查询: "parse_JSON_string"
+        //     → 匹配 "parse_JSON_string" → tokens.add("parse_json_string")
+        //
+        // 长度限制 ≥3：过滤掉 "id", "url" 等过短的 snake_case 词
         m = SNAKE_PATTERN.matcher(query);
         while (m.find()) {
             String word = m.group(1);
@@ -159,14 +195,38 @@ public class SearchUtils {
         }
 
         // 3. 拆分 CamelCase → 单词序列
+        // 两个正则表达式配合使用：
+        //   ① ([a-z])([A-Z]) → 在小写字母和大写字母之间插入空格
+        //   ② ([A-Z]+)([A-Z][a-z]) → 在连续大写字母序列后、大写+小写之前插入空格
+        //
+        // 示例：
+        //   查询: "parseJSONString"
+        //     ① 处理: "parseJSONString" → "parse JSONString"
+        //     ② 处理: "parse JSONString" → "parse JSON String"
+        //
+        //   查询: "getHTTPRequest"
+        //     ① 处理: "getHTTPRequest" → "get HTTPRequest"
+        //     ② 处理: "get HTTPRequest" → "get HTTP Request"
+        //
+        //   查询: "UserID"
+        //     ① 处理: "UserID" → "UserID"（无变化，没有小写后跟大写）
+        //     ② 处理: "UserID" → "User ID"（连续大写 "ID" 后接... 不，这里 ID 是结尾）
+        //     → 实际结果: "UserID"（需要后续拆分）
         String camelSplit = query
             .replaceAll("([a-z])([A-Z])", "$1 $2")
             .replaceAll("([A-Z]+)([A-Z][a-z])", "$1 $2");
 
         // 4. 替换下划线和点为空格
+        // [_.]+ 匹配一个或多个下划线(_)或点(.)，替换为空格
+        // 这样 snake_case 和 dot.notation 都会被拆分为独立单词
+        //
+        // 示例：
+        //   "user_service" → "user service"
+        //   "com.example.UserService" → "com example UserService"
+        //   "parse_JSON_data" → "parse JSON data"
+        //   "file.path/to/file" → "file path to file"
         String normalized = camelSplit.replaceAll("[_.]+", " ");
 
-        // 5. 按非字母数字字符拆分
         String[] words = normalized.split("[^a-zA-Z0-9]+");
         for (String word : words) {
             if (word.isEmpty()) continue;
@@ -203,10 +263,14 @@ public class SearchUtils {
      * @return 相关性得分（可为负值）
      */
     public static int scorePathRelevance(String filePath, String query) {
+        // 空值保护：任一参数为空则无相关性
         if (filePath == null || query == null) return 0;
 
+        // 路径预处理：统一转小写，便于不区分大小写的匹配
         String pathLower = filePath.toLowerCase();
+        // 提取文件名（路径中最后一个 '/' 之后的部分），例如 "/src/main/java/MyClass.java" → "myclass.java"
         String fileName = filePath.substring(filePath.lastIndexOf('/') + 1).toLowerCase();
+        // 提取目录名（路径中最后一个 '/' 之前的部分），例如 "/src/main/java/MyClass.java" → "/src/main/java"
         String dirName;
         int lastSep = filePath.lastIndexOf('/');
         if (lastSep >= 0) {
@@ -214,41 +278,43 @@ public class SearchUtils {
         } else {
             dirName = "";
         }
-
         int score = 0;
-
-        // 按查询中的每个词评分
+        // 将查询按空格分割为多个词，逐个词评分
         String[] queryWords = query.split("\\s+");
         for (String word : queryWords) {
             if (word.isEmpty()) continue;
-            // 提取该词的子 token（不含词干变体，避免分数膨胀）
+            // 提取该词的子 token（第二个参数 false 表示不含词干变体）
+            // 例如 "authentication" 提取出 ["authentication"]，而非 ["authentication", "auth", "authentic"]
+            // 这样可以避免因词干扩展导致的分数膨胀
             List<String> subTokens = extractSearchTerms(word, false);
             if (subTokens.isEmpty()) continue;
-
             boolean matched = false;
+            // 三级匹配策略（按优先级从高到低），每个查询词只匹配最高级别的匹配，不重复加分：
+            // 1. 文件名匹配（最高优先级，+10分）：查询词出现在文件名中，最相关
+            // 2. 目录名匹配（中等优先级，+5分）：查询词出现在目录路径中，次相关
+            // 3. 完整路径匹配（最低优先级，+3分）：查询词出现在任意路径位置
             // 精确文件名匹配（最高分）
             for (String t : subTokens) {
                 if (fileName.contains(t)) { score += 10; matched = true; break; }
             }
+            // 已匹配文件名，跳过后续检查（每个词只取最高匹配级别）
             if (matched) continue;
-
-            // 目录匹配
+            // 目录匹配（次高优先级）
             for (String t : subTokens) {
                 if (dirName.contains(t)) { score += 5; matched = true; break; }
             }
+            // 已匹配目录，跳过后续检查
             if (matched) continue;
-
-            // 一般路径匹配
+            // 一般路径匹配（最低优先级）
             for (String t : subTokens) {
                 if (pathLower.contains(t)) { score += 3; break; }
             }
         }
-
-        // 测试文件降权
+        // 测试文件降权：如果是测试文件但查询词不涉及测试，减去15分
+        // 例如：查询 "UserService" 时，"UserServiceTest.java" 会被降权，避免测试文件排在前面
         if (isTestFile(filePath) && !mentionsTests(query)) {
             score -= 15;
         }
-
         return score;
     }
 

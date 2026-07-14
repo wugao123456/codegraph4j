@@ -40,7 +40,6 @@
     <logger name="com.codegraph" level="INFO" additivity="false">
         <appender-ref ref="STDOUT"/>
     </logger>
-    </logger>
     <!-- 根日志级别 -->
     <root level="INFO">
         <appender-ref ref="STDOUT"/>
