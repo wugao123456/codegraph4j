@@ -72,12 +72,12 @@ cd codegraph4j
 mvn clean package -DskipTests
 ```
 
-构建完成后，Fat JAR 位于 `target/codegraph4j-1.0-SNAPSHOT.jar`。
+构建完成后，Fat JAR 位于 `target/codegraph4j-1.0.0.jar`。
 
 ### 3. 初始化项目
 
 ```bash
-java -jar target/codegraph4j-1.0-SNAPSHOT.jar init -p /path/to/your/project
+java -jar target/codegraph4j-1.0.0.jar init -p /path/to/your/project
 ```
 
 这会在项目根目录创建 `.codegraph/codegraph4j.db`。
@@ -85,7 +85,7 @@ java -jar target/codegraph4j-1.0-SNAPSHOT.jar init -p /path/to/your/project
 ### 4. 索引代码
 
 ```bash
-java -jar target/codegraph4j-1.0-SNAPSHOT.jar index -p /path/to/your/project
+java -jar target/codegraph4j-1.0.0.jar index -p /path/to/your/project
 ```
 
 ### 5. 启动 MCP 服务（由 AI 助手自动调用）
@@ -95,7 +95,7 @@ java -jar target/codegraph4j-1.0-SNAPSHOT.jar index -p /path/to/your/project
 也可手动测试：
 
 ```bash
-java -jar target/codegraph4j-1.0-SNAPSHOT.jar serve --mcp -p /path/to/your/project
+java -jar target/codegraph4j-1.0.0.jar serve --mcp -p /path/to/your/project
 ```
 ## 命令详解
 
@@ -122,13 +122,7 @@ java -jar target/codegraph4j-1.0-SNAPSHOT.jar serve --mcp -p /path/to/your/proje
   }
 }
 ```
-
-也可以通过命令查看当前配置状态：
-
-```bash
-# 查看当前配置状态
-java -jar codegraph4j.jar install --print-config --target all --global
-```
+### init — 初始化建立codegraph4j库
 ```bash
 java -jar codegraph4j.jar init -p <project-path> [options]
 ```
