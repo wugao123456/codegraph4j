@@ -39,7 +39,7 @@ CodeGraph4j 是 [codegraph](https://github.com/colbymchenry/codegraph) 的 Java 
 
 **适用场景**：
 
-- Java 企业项目、Spring 微服务体系
+- 中文java项目、Spring 微服务体系
 - 包含 Dubbo / OpenFeign RPC 调用的分布式系统
 - 需要对 AI 助手提供精准 Java 代码上下文理解的团队
 
