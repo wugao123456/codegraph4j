@@ -971,17 +971,31 @@ public class ExploreTool extends BaseTool {
             boolean isCentral, Map<String, Boolean> siblingSuperCache,
             Map<String, Boolean> superManyCache, int minSiblings, ExploreOutputBudget budget) {
 
+        // hasSpineNode：文件中是否包含调用链路径上的节点（即 flow.pathNodeIds 中的节点）
         boolean hasSpineNode = nodes.stream().anyMatch(n -> pathNodeIds.contains(n.getId()));
+        // isPolySib：是否是多态兄弟文件（不含路径节点，但包含继承了"多子类父类"的类）
+        // 例如：UserServiceImpl 和 OrderServiceImpl 都继承自 BaseServiceImpl（有很多子类）
+        // 这种文件信息量大但与核心路径关联不大，适合骨架渲染
         boolean isPolySib = !hasSpineNode
             && isPolymorphicSibling(nodes, siblingSuperCache, minSiblings);
+        // spareNamed：文件中是否包含"独特命名节点"（即 flow.uniqueNamedNodeIds 中的节点）
+        // 这些是罕见且精确匹配的节点，信息量高，值得完整展示
         boolean spareNamed = nodes.stream().anyMatch(n -> uniqueNamedIds.contains(n.getId()));
+        // definesPolySuper：文件是否定义了多态父类型（接口/抽象类有很多实现类）
+        // 例如：BaseService 接口有 10 个子类实现
         boolean definesPolySuper = definesPolymorphicSupertype(nodes, superManyCache, minSiblings);
+        // spared："可豁免"标志 = 包含独特命名节点 AND 不定义多态父类型
+        // 如果文件包含独特命名节点且不是父类型定义文件，值得完整展示
         boolean spared = spareNamed && !definesPolySuper;
 
+        // namedBodyChars：计算路径节点和命名节点的可调用体总字符数
+        // 用于判断文件是否"太大"
         int namedBodyChars = 0;
         for (Node n : nodes) {
+            // 只统计可调用节点（函数/方法等），且是路径节点或命名节点
             if (isCallable(n.getKind().getValue())
                 && (pathNodeIds.contains(n.getId()) || namedNodeIds.contains(n.getId()))) {
+                // 累加节点体内的字符数（从 startLine-1 到 endLine）
                 if (n.getStartLine() > 0 && n.getEndLine() > n.getStartLine()) {
                     namedBodyChars += String.join("\n", fileLines.subList(
                         Math.max(0, n.getStartLine() - 1),
@@ -990,6 +1004,11 @@ public class ExploreTool extends BaseTool {
             }
         }
 
+        // onSpineGodFile："巨型路径文件"标志，满足三个条件：
+        // 1. hasSpineNode：包含路径节点
+        // 2. namedBodyChars > budget.maxCharsPerFile：命名节点体总字符超过限制
+        // 3. 存在独特命名的可调用节点，但不在路径上
+        // 这种文件太大且包含非路径的重要节点，适合骨架渲染（只显示结构，不展开实现）
         boolean onSpineGodFile = hasSpineNode
             && namedBodyChars > budget.maxCharsPerFile
             && nodes.stream().anyMatch(n ->
@@ -997,16 +1016,23 @@ public class ExploreTool extends BaseTool {
                     && uniqueNamedIds.contains(n.getId())
                     && !pathNodeIds.contains(n.getId()));
 
+        // 渲染模式决策：
+        // 1. SKELETON（骨架模式）：巨型路径文件 或（非路径文件且是多态兄弟且不可豁免）
+        //    只显示类/方法签名，不展开实现体
         if (onSpineGodFile || (!hasSpineNode && isPolySib && !spared)) {
             return RenderMode.SKELETON;
         }
 
+        // 2. WHOLE_FILE（完整文件模式）：文件行数和字符数都在限制内
+        //    中心文件（central file）允许更大的阈值（280行 vs 220行）
         int wholeFileMaxLines = isCentral ? 280 : 220;
         int wholeFileMaxChars = isCentral ? budget.maxCharsPerFile * 3 : budget.maxCharsPerFile * 3;
+        // 简化判断：行数 <= 阈值 且 预估字符数（行数*80）<= 字符阈值
         if (fileLines.size() <= wholeFileMaxLines && fileLines.size() * 80 <= wholeFileMaxChars) {
             return RenderMode.WHOLE_FILE;
         }
 
+        // 3. CLUSTERED（聚类模式）：默认模式，按聚类合并相关代码块
         return RenderMode.CLUSTERED;
     }
 
