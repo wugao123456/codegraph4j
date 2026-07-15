@@ -28,15 +28,13 @@
 
 ## 为什么选择 CodeGraph4j
 
-CodeGraph4j 是 [codegraph](https://github.com/colbymchenry/codegraph) 的 Java 移植版本，核心语义图谱逻辑保持一致，同时在 Java 生态上提供更深度的支持。
+CodeGraph4j 是 [codegraph](https://github.com/colbymchenry/codegraph) 的 Java 移植版本，核心语义图谱逻辑保持一致，同时在 中文和java生态上提供更深度的支持。
 
 | | codegraph (TypeScript) | CodeGraph4j (Java) |
 |---|---|---|
-| **运行时** | TypeScript / Node.js | **JDK 8+**，兼容绝大多数企业项目 |
+| **运行时** | TypeScript / Node.js | **JDK 8+** 安装简单  java -jar命令  一键运行）|
+| **中文检测** | 通用语言解析 | **中文友好**：利用模型能力，中文转换英文 |
 | **框架感知** | 通用语言解析 | **深度 Java 框架感知**：Spring Boot、Dubbo、OpenFeign |
-| **AI 工具** | Claude、Cursor、Codex、opencode 等 8 个 | Claude、Cursor、**Trae**（对中文 IDE 更友好） |
-| **分发方式** | npm / 独立二进制 | **Maven / Fat JAR**（`java -jar` 一键运行） |
-| **微服务支持** | 单项目索引 | **自定义数据库路径**，天然支持多根项目独立索引 |
 | **代码解析** | Tree-sitter | **Tree-sitter（JNA 桥接）**，同等级别的 AST 解析 |
 
 **适用场景**：
@@ -44,7 +42,6 @@ CodeGraph4j 是 [codegraph](https://github.com/colbymchenry/codegraph) 的 Java 
 - Java 企业项目、Spring 微服务体系
 - 包含 Dubbo / OpenFeign RPC 调用的分布式系统
 - 需要对 AI 助手提供精准 Java 代码上下文理解的团队
-- 使用 Trae、Claude Code、Cursor 等 AI IDE 的开发者
 
 ---
 
@@ -57,7 +54,6 @@ CodeGraph4j 是 [codegraph](https://github.com/colbymchenry/codegraph) 的 Java 
 - **增量同步** — FileWatcher 自动监听 + Git hooks 备选，索引实时更新
 - **SQLite 本地存储** — FTS5 全文搜索，零外部依赖，数据库路径可自定义
 - **JDK 8 兼容** — 覆盖绝大多数企业级 Java 项目
-- **一键安装** — `install` 命令自动配置 Claude、Cursor、Trae 的 MCP 连接
 
 ---
 
@@ -77,15 +73,6 @@ mvn clean package -DskipTests
 ```
 
 构建完成后，Fat JAR 位于 `target/codegraph4j-1.0-SNAPSHOT.jar`。
-
-### 2. 安装 MCP 配置到 AI 助手
-
-```bash
-# 安装到所有支持的 AI 助手（全局配置）
-java -jar target/codegraph4j-1.0-SNAPSHOT.jar install --target all --global -p /path/to/your/project
-```
-
-支持的目标 (`--target`)：`claude`、`cursor`、`trae`、`all`、`auto`
 
 ### 3. 初始化项目
 
@@ -110,54 +97,38 @@ java -jar target/codegraph4j-1.0-SNAPSHOT.jar index -p /path/to/your/project
 ```bash
 java -jar target/codegraph4j-1.0-SNAPSHOT.jar serve --mcp -p /path/to/your/project
 ```
-
----
-
 ## 命令详解
 
-### install — 安装 MCP 配置
+### 集成trae — 安装 MCP 配置
 
 为 AI 助手自动配置 CodeGraph MCP 连接。
 
-```bash
-java -jar codegraph4j.jar install [options]
+在 Trae 的 `.trae/mcp.json` 中添加以下配置：
+
+```json
+{
+  "mcpServers": {
+    "codegraph4j": {
+      "command": "java",
+      "args": [
+        "-jar",
+        "/install/codegraph4j-1.0-release.jar",
+        "serve",
+        "--mcp",
+        "-p",
+        "/Project/codegraph4j"
+      ]
+    }
+  }
+}
 ```
 
-| 选项 | 说明 |
-|------|------|
-| `--target <targets>` | 目标 AI 助手（默认 `all`）：`claude`、`cursor`、`trae`（逗号分隔） |
-| `--global` | 全局安装（用户级配置），否则项目级 |
-| `-p, --project <path>` | 项目路径（默认当前目录）。Trae 需要显式指定 |
-| `--print-config` | 仅打印配置状态，不修改文件 |
-
-**各目标的配置路径**：
-
-| 目标 | 全局路径 | 项目路径 | 额外文件 |
-|------|---------|----------|----------|
-| Claude | `~/.claude.json` | `./.mcp.json` | `~/.claude/CLAUDE.md` |
-| Cursor | `~/.cursor/mcp.json` | `./.cursor/mcp.json` | — |
-| Trae | `~/Library/Application Support/Trae CN/User/mcp.json` | — | `./.trae/rules/codegraph.md` |
+也可以通过命令查看当前配置状态：
 
 ```bash
-# 示例：仅安装到 Trae 和 Claude
-java -jar codegraph4j.jar install --target trae,claude --global -p /path/to/project
-
 # 查看当前配置状态
 java -jar codegraph4j.jar install --print-config --target all --global
 ```
-
-### uninstall — 卸载 MCP 配置
-
-```bash
-java -jar codegraph4j.jar uninstall --target all
-```
-
-| 选项 | 说明 |
-|------|------|
-| `--target <targets>` | 目标 AI 助手（默认 `all`） |
-
-### init — 初始化数据库
-
 ```bash
 java -jar codegraph4j.jar init -p <project-path> [options]
 ```
@@ -441,52 +412,11 @@ java -jar codegraph4j.jar init -p /workspace/
 
 ---
 
-## 未来规划
-
-### 更多框架支持
-
-| 框架 | 场景 | 计划提取的关系 |
-|------|------|---------------|
-| **MyBatis** | ORM 框架 | Mapper XML → DAO 方法的 SQL 映射关系 |
-| **gRPC** | RPC | `@GrpcService` → proto 定义的双向引用 |
-
-
-
-### 更多 AI 工具支持
-
-扩展 installer 支持 Gemini CLI、Codex、opencode 等工具的 MCP 配置。
-
-### 功能优化
-
-- 中文符号搜索支持 
-- 解析结果缓存（避免重复解析未变更文件）
-- 多个插件支持（vscode、idea 插件等）
 
 
 
 
----
 
-## 开发
-
-### 运行测试
-
-```bash
-mvn test
-```
-
-### 运行特定测试
-
-```bash
-mvn test -Dtest=InstallerModuleTest
-mvn test -Dtest=SyncOrchestratorUnitTest
-```
-
-### 打包
-
-```bash
-mvn clean package -DskipTests
-```
 
 ### 技术栈
 
