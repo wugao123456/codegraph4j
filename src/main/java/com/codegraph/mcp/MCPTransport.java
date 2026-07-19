@@ -14,7 +14,7 @@ import java.util.Map;
  */
 public class MCPTransport {
 
-    static final ObjectMapper JSON = new ObjectMapper()
+    public static final ObjectMapper JSON = new ObjectMapper()
         .setSerializationInclusion(JsonInclude.Include.NON_NULL);
 
     public static final String PROTOCOL_VERSION = "2024-11-05";

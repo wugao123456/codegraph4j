@@ -11,6 +11,8 @@ import com.codegraph.db.QueryBuilder;
 import com.codegraph.mcp.MCPTransport.ToolCallResult;
 import com.codegraph.sync.SyncOrchestrator;
 import com.codegraph.sync.SyncResult;
+import com.codegraph.web.WebServer;
+import com.codegraph.web.WebSessionBridge;
 
 import org.slf4j.LoggerFactory;
 
@@ -46,6 +48,7 @@ public class MCPServer {
     private DatabaseConnection db;
     private MCPSession session;
     private MCPToolHandler toolHandler;
+    private WebServer webServer;
 
     public MCPServer(CodeGraphConfig config) {
         this.config = config;
@@ -107,6 +110,31 @@ public class MCPServer {
 
                 startCatchUpSync(queries);
 
+                // 如果配置了 Web 端口，启动 HTTP 查看器服务并让主线程保持存活
+                if (config.getWebPort() > 0) {
+                    QueryBuilder webQueries = new QueryBuilder(db);
+                    WebSessionBridge bridge = new WebSessionBridge(toolHandler, db, webQueries);
+                    webServer = new WebServer(config.getWebPort(), bridge);
+                    webServer.start();
+
+                    // stdio MCP 会话在后台线程运行，主线程阻塞等待 Web 服务
+                    Thread stdioThread = new Thread(() -> {
+                        session = new MCPSession(config.getProjectPath(), toolHandler);
+                        session.start();
+                    }, "mcp-stdio-main");
+                    stdioThread.setDaemon(false);
+                    stdioThread.start();
+                    logger.info("MCP Server ready — stdio on background, Web at http://localhost:{}", config.getWebPort());
+
+                    // 主线程阻塞，保持 JVM 存活，直到 WebServer 被停止
+                    try {
+                        Thread.currentThread().join();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return;
+                }
+
                 session = new MCPSession(config.getProjectPath(), toolHandler);
                 session.start();
 
@@ -156,6 +184,9 @@ public class MCPServer {
      */
     public void stop() {
         logger.info("Shutting down MCP server...");
+        if (webServer != null) {
+            webServer.stop();
+        }
         if (session != null) {
             session.stop();
         }

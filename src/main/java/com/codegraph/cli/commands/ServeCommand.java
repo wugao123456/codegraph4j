@@ -30,6 +30,10 @@ public class ServeCommand implements Runnable {
         description = "Run as MCP server (stdio transport)")
     private boolean mcp;
 
+    @CommandLine.Option(names = {"--web-port"},
+        description = "HTTP port for Web viewer (0 = disabled)")
+    private int webPort = 0;
+
     @CommandLine.Option(names = {"--db-path"},
         description = "Database directory (default: {project}/.codegraph)")
     private String dbPath;
@@ -60,15 +64,23 @@ public class ServeCommand implements Runnable {
             System.out.println("    \"args\": [\"-cp\", \"" + jarPath + "\",");
             System.out.println("             \"com.codegraph.cli.CodeGraphCli\",");
             System.out.println("             \"serve\", \"--mcp\",");
+            if (webPort > 0) {
+                System.out.println("             \"--web-port\", \"" + webPort + "\",");
+            }
             System.out.println("             \"-p\", \"" + projectOpt.projectRoot + "\"]");
             System.out.println("  }");
             System.out.println();
+            if (webPort > 0) {
+                System.out.println("Web viewer: http://localhost:" + webPort);
+                System.out.println();
+            }
             return;
         }
 
         // stdio 模式：移除控制台输出，避免污染 MCP 的 stdio 通道
         // 文件日志已在 MCPServer 构造函数中自动配置
         CodeGraphConfig config = new CodeGraphConfig(projectOpt.projectRoot, dbPath);
+        config.setWebPort(webPort);
         MCPServer server = new MCPServer(config);
         server.detachConsole();
 

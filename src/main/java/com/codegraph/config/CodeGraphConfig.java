@@ -10,8 +10,10 @@ import java.io.File;
  */
 public class CodeGraphConfig {
 
-    private final String projectPath;
+    private String projectPath;
     private final String dbPath;
+
+    private int webPort = 0;
 
     private int searchLimit = 8;
     private int traversalDepth = 3;
@@ -47,6 +49,17 @@ public class CodeGraphConfig {
     /** 获取日志目录 */
     public File getLogDir() {
         return new File(projectPath, ".codegraph/logs");
+    }
+
+    // ========== Web 服务参数 ==========
+
+    /** Web 查看器 HTTP 端口，0 表示禁用 */
+    public int getWebPort() {
+        return webPort;
+    }
+
+    public void setWebPort(int webPort) {
+        this.webPort = webPort;
     }
 
     // ========== 搜索参数 ==========
