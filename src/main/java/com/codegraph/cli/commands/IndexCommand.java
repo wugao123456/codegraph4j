@@ -1,5 +1,6 @@
 package com.codegraph.cli.commands;
 
+import com.codegraph.config.ProjectOption;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.sync.FileWatcher;

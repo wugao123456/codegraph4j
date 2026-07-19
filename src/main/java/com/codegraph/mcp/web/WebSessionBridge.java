@@ -1,4 +1,4 @@
-package com.codegraph.web;
+package com.codegraph.mcp.web;
 
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
@@ -110,11 +110,15 @@ public class WebSessionBridge {
         if (params.get("maxNodes") instanceof Number) {
             maxNodes = ((Number) params.get("maxNodes")).intValue();
         }
+        int degree = 3;
+        if (params.get("degree") instanceof Number) {
+            degree = ((Number) params.get("degree")).intValue();
+        }
 
-        logger.info("[WebBridge] graph/view symbol={}, file={}, maxNodes={}", symbol, file, maxNodes);
+        logger.info("[WebBridge] graph/view symbol={}, file={}, maxNodes={}, degree={}", symbol, file, maxNodes, degree);
 
         try {
-            GraphViewData data = GraphViewer.buildViewData(db, symbol, file, includeImports, maxNodes);
+            GraphViewData data = GraphViewer.buildViewData(db, symbol, file, includeImports, maxNodes, degree);
 
             JsonRpcMessage response = new JsonRpcMessage();
             response.id = request.id;

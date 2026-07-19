@@ -1,4 +1,4 @@
-package com.codegraph.cli.commands;
+package com.codegraph.config;
 
 import picocli.CommandLine;
 

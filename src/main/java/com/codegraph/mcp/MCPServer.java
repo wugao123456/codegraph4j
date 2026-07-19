@@ -9,10 +9,10 @@ import com.codegraph.config.CodeGraphConfig;
 import com.codegraph.db.DatabaseConnection;
 import com.codegraph.db.QueryBuilder;
 import com.codegraph.mcp.MCPTransport.ToolCallResult;
+import com.codegraph.mcp.web.WebServer;
+import com.codegraph.mcp.web.WebSessionBridge;
 import com.codegraph.sync.SyncOrchestrator;
 import com.codegraph.sync.SyncResult;
-import com.codegraph.web.WebServer;
-import com.codegraph.web.WebSessionBridge;
 
 import org.slf4j.LoggerFactory;
 

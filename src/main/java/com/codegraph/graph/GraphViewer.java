@@ -122,13 +122,15 @@ public class GraphViewer {
      * @param file       文件名过滤（可选）
      * @param includeImports 是否包含 import/export/references 边
      * @param maxNodes   最大节点数（默认 250）
+     * @param degree     BFS 扩展度数（默认 3）
      */
     public static GraphViewData buildViewData(DatabaseConnection db,
                                                String symbol, String file,
-                                               boolean includeImports, int maxNodes)
+                                               boolean includeImports, int maxNodes, int degree)
             throws SQLException {
 
         if (maxNodes <= 0) maxNodes = 250;
+        if (degree <= 0) degree = 3;
 
         // Edge-kind filter
         StringBuilder edgeFilter = new StringBuilder();
@@ -147,7 +149,7 @@ public class GraphViewer {
         Set<String> nodeIds = new LinkedHashSet<>();
 
         if (symbol != null && !symbol.isEmpty()) {
-            // 按符号名查找 seed 节点 → 1-hop 边扩展
+            // 按符号名查找 seed 节点
             String nodeSql = "SELECT id, kind, name, qualified_name, file_path, start_line FROM nodes WHERE name = ? OR qualified_name = ? LIMIT 1";
             try (PreparedStatement ps = db.getConnection().prepareStatement(nodeSql)) {
                 ps.setString(1, symbol);
@@ -161,24 +163,29 @@ public class GraphViewer {
                 }
             }
 
-            if (!nodeIds.isEmpty()) {
-                // 1-hop 边扩展
-                String edgeSql = "SELECT source, target FROM edges WHERE (source = ? OR target = ?)" + edgeFilterStr;
+            // BFS 多度数扩展
+            Set<String> visited = new LinkedHashSet<>(nodeIds);
+            for (int d = 0; d < degree && visited.size() < maxNodes; d++) {
+                Set<String> currentLevel = new LinkedHashSet<>(visited);
+                String placeholders = repeat("?", currentLevel.size(), ",");
+                String edgeSql = "SELECT source, target FROM edges WHERE (source IN (" + placeholders + ") OR target IN (" + placeholders + "))" + edgeFilterStr;
                 try (PreparedStatement ps = db.getConnection().prepareStatement(edgeSql)) {
                     int idx = 1;
-                    ps.setString(idx++, nodeIds.iterator().next());
-                    ps.setString(idx++, nodeIds.iterator().next());
+                    for (String id : currentLevel) ps.setString(idx++, id);
+                    for (String id : currentLevel) ps.setString(idx++, id);
                     for (String p : edgeParams) ps.setString(idx++, p);
                     ResultSet rs = ps.executeQuery();
                     while (rs.next()) {
-                        nodeIds.add(rs.getString("source"));
-                        nodeIds.add(rs.getString("target"));
+                        visited.add(rs.getString("source"));
+                        visited.add(rs.getString("target"));
+                        if (visited.size() >= maxNodes) break;
                     }
                 }
-
-                // 批量获取节点
-                nodeRows = fetchNodesByIds(db, nodeIds);
             }
+            nodeIds = visited;
+
+            // 批量获取节点
+            nodeRows = fetchNodesByIds(db, nodeIds);
         } else if (file != null && !file.isEmpty()) {
             // 按文件名 LIKE 过滤
             String seedSql = "SELECT id, kind, name, qualified_name, file_path, start_line FROM nodes WHERE file_path LIKE ? LIMIT ?";
@@ -192,30 +199,28 @@ public class GraphViewer {
                 }
             }
 
-            // 1-hop 邻居扩展
+            // BFS 多度数扩展
             if (!nodeIds.isEmpty()) {
-                Set<String> allNodeIds = new LinkedHashSet<>(nodeIds);
-                String placeholders = repeat("?", nodeIds.size(), ",");
-                String neighborSql = "SELECT DISTINCT n.id, n.kind, n.name, n.qualified_name, n.file_path, n.start_line FROM nodes n " +
-                    "JOIN edges e ON (e.source = n.id OR e.target = n.id) " +
-                    "WHERE (e.source IN (" + placeholders + ") OR e.target IN (" + placeholders + "))" +
-                    edgeFilterStr.replace("AND kind", "AND e.kind") + " LIMIT ?";
-                try (PreparedStatement ps = db.getConnection().prepareStatement(neighborSql)) {
-                    int idx = 1;
-                    for (String id : nodeIds) ps.setString(idx++, id);
-                    for (String id : nodeIds) ps.setString(idx++, id);
-                    for (String p : edgeParams) ps.setString(idx++, p);
-                    ps.setInt(idx, maxNodes);
-                    ResultSet rs = ps.executeQuery();
-                    while (rs.next()) {
-                        String nid = rs.getString("id");
-                        if (!allNodeIds.contains(nid)) {
-                            nodeRows.add(readNodeRow(rs));
-                            allNodeIds.add(nid);
+                Set<String> visited = new LinkedHashSet<>(nodeIds);
+                for (int d = 0; d < degree && visited.size() < maxNodes; d++) {
+                    Set<String> currentLevel = new LinkedHashSet<>(visited);
+                    String placeholders = repeat("?", currentLevel.size(), ",");
+                    String edgeSql = "SELECT source, target FROM edges WHERE (source IN (" + placeholders + ") OR target IN (" + placeholders + "))" + edgeFilterStr;
+                    try (PreparedStatement ps = db.getConnection().prepareStatement(edgeSql)) {
+                        int idx = 1;
+                        for (String id : currentLevel) ps.setString(idx++, id);
+                        for (String id : currentLevel) ps.setString(idx++, id);
+                        for (String p : edgeParams) ps.setString(idx++, p);
+                        ResultSet rs = ps.executeQuery();
+                        while (rs.next()) {
+                            visited.add(rs.getString("source"));
+                            visited.add(rs.getString("target"));
+                            if (visited.size() >= maxNodes) break;
                         }
                     }
                 }
-                nodeIds = allNodeIds;
+                nodeIds = visited;
+                nodeRows = fetchNodesByIds(db, nodeIds);
             }
         } else {
             // 全图模式：按 degree 降序，排除 parameter/import
@@ -260,17 +265,17 @@ public class GraphViewer {
         }
 
         // 计算节点 degree（用于 sizing）
-        Map<String, Integer> degree = new HashMap<>();
-        for (String id : nodeIds) degree.put(id, 0);
+        Map<String, Integer> nodeDegree = new HashMap<>();
+        for (String id : nodeIds) nodeDegree.put(id, 0);
         for (EdgeRow e : edgeRows) {
-            degree.put(e.source, degree.getOrDefault(e.source, 0) + 1);
-            degree.put(e.target, degree.getOrDefault(e.target, 0) + 1);
+            nodeDegree.put(e.source, nodeDegree.getOrDefault(e.source, 0) + 1);
+            nodeDegree.put(e.target, nodeDegree.getOrDefault(e.target, 0) + 1);
         }
 
         // 构建 ViewNode 列表
         List<ViewNode> nodes = new ArrayList<>();
         for (NodeRow r : nodeRows) {
-            int d = degree.getOrDefault(r.id, 0);
+            int d = nodeDegree.getOrDefault(r.id, 0);
             nodes.add(new ViewNode(
                 r.id,
                 r.name,
@@ -325,7 +330,7 @@ public class GraphViewer {
         List<NodeRow> rows = new ArrayList<>();
         if (ids.isEmpty()) return rows;
         String placeholders = repeat("?", ids.size(), ",");
-        String sql = "SELECT id, kind, name, qualified_name, file_path, start_line FROM nodes WHERE id IN (" + placeholders + ")";
+        String sql = "SELECT id, kind, name, qualified_name, file_path, start_line FROM nodes WHERE id IN (" + placeholders + ") AND kind NOT IN ('import','export')";
         try (PreparedStatement ps = db.getConnection().prepareStatement(sql)) {
             int idx = 1;
             for (String id : ids) ps.setString(idx++, id);

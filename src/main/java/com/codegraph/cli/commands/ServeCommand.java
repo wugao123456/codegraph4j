@@ -1,6 +1,7 @@
 package com.codegraph.cli.commands;
 
 import com.codegraph.config.CodeGraphConfig;
+import com.codegraph.config.ProjectOption;
 import com.codegraph.mcp.MCPServer;
 import com.codegraph.utils.AppUtils;
 import org.slf4j.LoggerFactory;
@@ -44,7 +45,8 @@ public class ServeCommand implements Runnable {
             System.out.println("Currently only MCP mode (--mcp) is supported.");
             return;
         }
-
+        logger.info("Starting MCP server in stdio mode for"
+        +"project: {}，web-port：{},", projectOpt.projectRoot,webPort);
         // 检测是否为交互式终端（人类误运行）
         // System.console() 在 stdin 被管道/重定向时返回 null
         if (System.console() != null) {

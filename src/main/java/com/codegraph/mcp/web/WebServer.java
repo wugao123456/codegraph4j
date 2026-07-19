@@ -1,4 +1,4 @@
-package com.codegraph.web;
+package com.codegraph.mcp.web;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -45,6 +45,7 @@ public class WebServer {
             server.createContext("/", new StaticFileHandler());
             server.createContext("/api/mcp", new JsonRpcHandler());
             server.createContext("/assets/", new AssetsHandler());
+            server.createContext("/web/", new WebResourcesHandler());
             server.setExecutor(Executors.newFixedThreadPool(4));
             server.start();
             logger.info("Web viewer started at http://localhost:{}", port);
@@ -151,6 +152,36 @@ public class WebServer {
             if (assetName.endsWith(".js")) contentType = "application/javascript";
             else if (assetName.endsWith(".css")) contentType = "text/css";
             else if (assetName.endsWith(".html")) contentType = "text/html";
+
+            exchange.getResponseHeaders().set("Content-Type", contentType);
+            exchange.sendResponseHeaders(200, content.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(content);
+            }
+        }
+    }
+
+    private class WebResourcesHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String path = exchange.getRequestURI().getPath();
+            String resourceName = path.substring("/web/".length());
+            if (resourceName.isEmpty()) {
+                sendText(exchange, 404, "Not Found");
+                return;
+            }
+
+            InputStream is = getClass().getResourceAsStream("/web/" + resourceName);
+            if (is == null) {
+                sendText(exchange, 404, "Not Found");
+                return;
+            }
+
+            byte[] content = readAllBytes(is);
+            String contentType = "application/octet-stream";
+            if (resourceName.endsWith(".js")) contentType = "application/javascript";
+            else if (resourceName.endsWith(".css")) contentType = "text/css";
+            else if (resourceName.endsWith(".html")) contentType = "text/html";
 
             exchange.getResponseHeaders().set("Content-Type", contentType);
             exchange.sendResponseHeaders(200, content.length);
