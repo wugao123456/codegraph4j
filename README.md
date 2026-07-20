@@ -97,6 +97,26 @@ java -jar target/codegraph4j-1.0.0.jar index -p /path/to/your/project
 ```bash
 java -jar target/codegraph4j-1.0.0.jar serve --mcp -p /path/to/your/project
 ```
+
+### 6. 启动 Web 可视化界面
+
+启动时加上 `--web-port` 参数，即可在浏览器中查看代码知识图谱：
+
+```bash
+java -jar target/codegraph4j-1.0.0.jar serve --mcp --web-port 9999 -p /path/to/your/project
+```
+
+浏览器打开 `http://localhost:9999` 即可查看：
+
+![CodeGraph Viewer](docs/viewer-screenshot.png)
+
+**Web Viewer 功能**：
+
+- **符号查询**：输入符号名（如 `GraphQueryManager`）进行聚焦查询
+- **度数控制**：支持 1-5 度扩展，默认 1 度
+- **节点详情**：点击节点查看右侧面板详情（ID、类型、文件路径等）
+- **右键展开**：右键点击节点按当前度数扩展子图
+- **文件查询**：支持按文件名过滤
 ## 命令详解
 
 ### 集成trae — 安装 MCP 配置
