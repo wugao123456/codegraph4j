@@ -11,37 +11,7 @@
 ## 为什么需要代码知识图谱
 
 当 AI 编码助手需要理解代码时——回答问题、定位 Bug、实现需求——它只能像人类一样逐文件搜索：grep → glob → Read，一个文件接一个文件地拼凑调用链和依赖关系。在开始真正工作之前，大量的 tool call 和往返对话已经消耗了 token 和时间。代码库越大，java微服务化越多，调用链路越深，这种盲人摸象式的探索越慢。
-
-**CodeGraph 将整个代码库变成一次查询即可获得的精准上下文。** 它预先构建了每行代码中每个符号、每条调用关系、每个依赖的语义知识图谱——AI 助手不用再逐文件爬取，只需一个问题就能得到：
-
-- **相关代码的完整源码**（带行号）
-- **符号间的调用路径**（包括 grep 无法追踪的动态分派和多态跳转）
-- **修改的影响范围**（哪些模块会受影响）
-
-**精准确认，而非逐文件搜索** —— 意味着更少的 tool call、更快的回答速度、更低的 token 消耗，在任意大小的代码库上都能稳定获益。
-
-> **关于成本**：在任意代码库上，CodeGraph 的核心价值是精准度和速度——更少的 tool call、更快的回答。它同样降低 token 和费用成本，但这种节省**与代码规模正相关**：在小项目上节约量有限，但在大仓、多模块的 Java 企业项目中——乘以整个团队每日的 AI 使用量后——会累计成显著的成本节省。
-
 > 详细基准测试数据（7 个开源项目、7 种语言，58% 更少 tool call、22% 更快），请参阅 [codegraph 官方 benchmark →](https://github.com/colbymchenry/codegraph#why-codegraph)
-
----
-
-## 为什么选择 CodeGraph4j
-
-CodeGraph4j 是 [codegraph](https://github.com/colbymchenry/codegraph) 的 Java 移植版本，核心语义图谱逻辑保持一致，同时在 中文和java生态上提供更深度的支持。
-
-| | codegraph (TypeScript) | CodeGraph4j (Java) |
-|---|---|---|
-| **运行时** | TypeScript / Node.js | **JDK 8+** 安装简单  java -jar命令  一键运行）|
-| **中文检测** | 通用语言解析 | **中文友好**：利用模型能力，中文转换英文 |
-| **框架感知** | 通用语言解析 | **深度 Java 框架感知**：Spring Boot、Dubbo、OpenFeign |
-| **代码解析** | Tree-sitter | **Tree-sitter（JNA 桥接）**，同等级别的 AST 解析 |
-
-**适用场景**：
-
-- 中文java项目、Spring 微服务体系
-- 包含 Dubbo / OpenFeign RPC 调用的分布式系统
-- 需要对 AI 助手提供精准 Java 代码上下文理解的团队
 
 ---
 
