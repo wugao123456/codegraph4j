@@ -108,7 +108,7 @@ java -jar target/codegraph4j-1.0.0.jar serve --mcp --web-port 9999 -p /path/to/y
 
 浏览器打开 `http://localhost:9999` 即可查看：
 
-![CodeGraph Viewer](docs/viewer-screenshot.png)
+![CodeGraph Viewer](documents/png/viewer-screenshot.jpg)
 
 **Web Viewer 功能**：
 
